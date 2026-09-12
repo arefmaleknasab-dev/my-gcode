@@ -1,0 +1,117 @@
+import { useEffect, useMemo, useRef } from "react";
+import type { GenResult } from "../lib/lathe";
+import { fmtTime } from "../lib/lathe";
+import { cn } from "../utils/cn";
+import { IconCode, IconCopy, IconDownload } from "./icons";
+
+interface Props {
+  gen: GenResult;
+  activeLine: number;
+  onCopy: () => void;
+  onDownload: () => void;
+}
+
+const TOKEN_RE = /(%|\(.*?\)|[NO]\d+|G\d+(?:\.\d+)?|M\d+|[XYZ]-?\d+(?:\.\d+)?|[FSP]\d+(?:\.\d+)?)/g;
+
+function tokenize(line: string) {
+  const parts: { text: string; cls: string }[] = [];
+  let last = 0;
+  for (const m of line.matchAll(TOKEN_RE)) {
+    const i = m.index ?? 0;
+    if (i > last) parts.push({ text: line.slice(last, i), cls: "" });
+    const tok = m[0];
+    let cls = "";
+    if (tok === "%" || tok.startsWith("O")) cls = "gc-tok-d";
+    else if (tok.startsWith("(")) cls = "gc-tok-c";
+    else if (tok.startsWith("N")) cls = "gc-tok-n";
+    else if (tok.startsWith("G")) cls = "gc-tok-g";
+    else if (tok.startsWith("M")) cls = "gc-tok-m";
+    else if (tok.startsWith("X") || tok.startsWith("Z")) cls = "gc-tok-ax";
+    else cls = "gc-tok-f";
+    parts.push({ text: tok, cls });
+    last = i + tok.length;
+  }
+  if (last < line.length) parts.push({ text: line.slice(last), cls: "" });
+  return parts;
+}
+
+export default function GCodePanel({ gen, activeLine, onCopy, onDownload }: Props) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  const highlighted = useMemo(() => gen.lines.map((l) => tokenize(l)), [gen.lines]);
+
+  useEffect(() => {
+    if (activeLine < 0 || !bodyRef.current) return;
+    const el = bodyRef.current.querySelector(`[data-ln="${activeLine}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [activeLine]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col rounded-lg border border-edge bg-panel">
+      <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
+        <div className="flex items-center gap-2">
+          <IconCode className="h-4 w-4 text-brass" />
+          <h2 className="font-display text-[15px] leading-none text-ink">جی‌کد خروجی</h2>
+          <span className="flex items-center gap-1 rounded-full border border-edge bg-panel2 px-2 py-0.5 text-[10px] font-semibold text-mute">
+            <span className={cn("h-1.5 w-1.5 rounded-full", activeLine >= 0 ? "dot-live bg-ok" : "bg-brass")} />
+            {activeLine >= 0 ? "همگام با شبیه‌سازی" : "همگام با طرح"}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button className="btn !px-2 !py-1.5 text-[11.5px]" onClick={onCopy} title="کپی جی‌کد">
+            <IconCopy className="h-3.5 w-3.5" />
+            کپی
+          </button>
+          <button className="btn btn-brass !px-2 !py-1.5 text-[11.5px]" onClick={onDownload} title="دانلود فایل NC">
+            <IconDownload className="h-3.5 w-3.5" />
+            دانلود NC.
+          </button>
+        </div>
+      </div>
+
+      {/* آمار */}
+      <div className="grid grid-cols-4 gap-px border-b border-edge bg-edge">
+        <Stat label="زمان تخمینی" value={fmtTime(gen.timeSec)} accent />
+        <Stat label="باربرداری" value={`${gen.volumeCm3.toFixed(1)} cm³`} />
+        <Stat label="مسیر برش" value={`${(gen.cutLen / 10).toFixed(0)} cm`} />
+        <Stat label="عملیات خشن" value={String(gen.roughLayers)} />
+      </div>
+
+      <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto py-1.5" dir="ltr">
+        {highlighted.map((parts, i) => (
+          <div
+            key={i}
+            data-ln={i}
+            className={cn("gc-line", i === activeLine && "border-brass bg-brass/10")}
+            style={{ textAlign: "left" }}
+          >
+            <span className="mr-2 inline-block w-7 select-none text-right text-[10px] text-dim">{i + 1}</span>
+            {parts.map((p, j) => (
+              <span key={j} className={p.cls}>
+                {p.text}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-edge px-3 py-1.5 text-[10.5px] text-dim">
+        <span>{gen.lines.length} خط • {gen.segs.length} حرکت</span>
+        <span dir="ltr" className="font-mono">
+          {gen.format === "modal" ? "G90 • G49 • XY • X=L • Y=⌀ • M02" : "G21 • G18 • X/Z • X=⌀"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div className="bg-panel px-2.5 py-1.5">
+      <div className="text-[9.5px] font-semibold text-dim">{label}</div>
+      <div className={cn("font-mono text-[12.5px] font-bold", accent ? "text-brass2" : "text-ink/90")} dir="ltr" style={{ textAlign: "right" }}>
+        {value}
+      </div>
+    </div>
+  );
+}

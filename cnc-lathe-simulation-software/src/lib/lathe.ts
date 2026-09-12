@@ -1,0 +1,1324 @@
+/* ------------------------------------------------------------------ */
+/*  خراط‌کد — موتور هندسه، مسیر ابزار و جی‌کد برای خراطی دومحور (X/Z)   */
+/* ------------------------------------------------------------------ */
+
+export interface PPoint {
+  id: number;
+  z: number; // موقعیت طولی (mm)
+  r: number; // شعاع (mm)
+  smooth: boolean; // نقطه صاف (اسپلاین) یا گوشه
+}
+
+/** روش خشن‌تراشی: کلاسیک (یک‌طرفه) | رفت‌وبرگشتی (زیگزاگ) | ناحیه‌ای */
+export type RoughMode = "classic" | "zigzag" | "zone";
+
+export const ROUGH_MODES: { id: RoughMode; name: string }[] = [
+  { id: "classic", name: "یک‌طرفه (کلاسیک)" },
+  { id: "zigzag", name: "رفت‌وبرگشتی (زیگزاگ)" },
+  { id: "zone", name: "ناحیه‌ای" },
+];
+
+/* ---------------- شکل مقطع خام و پوشش دورانی ---------------- */
+
+/** شکل مقطع خام: دایره | مربع | شش‌ضلعی | هشت‌ضلعی */
+export type BlankShape = "circle" | "square" | "hex" | "octagon";
+
+export const BLANK_SHAPES: { id: BlankShape; name: string; sides: number }[] = [
+  { id: "circle", name: "دایره‌ای", sides: 0 },
+  { id: "square", name: "مربعی", sides: 4 },
+  { id: "hex", name: "شش‌ضلعی", sides: 6 },
+  { id: "octagon", name: "هشت‌ضلعی", sides: 8 },
+];
+
+/**
+ * محاسبهٔ پوشش دورانی خام: هنگام چرخش، گوشه‌های مقطعِ چندضلعی دایره‌ای بزرگ‌تر
+ * از «قطر واقعی» (قطر محاطی / فاصلهٔ بین لبه‌های موازی) را جاروب می‌کنند.
+ * قطر واقعی = blankD (قطر محاطی) و قطر مؤثر دوران = قطر محیطی (دورترین گوشه).
+ */
+export function rotationalEnvelope(blankD: number, shape: BlankShape): {
+  maxRotD: number; // قطر مؤثر دوران (پوشش حداکثری)
+  inR: number; // شعاع محاطی (قطر واقعی / ۲)
+  outR: number; // شعاع محیطی (دورترین نقطه از محور)
+  sides: number; // تعداد اضلاع (۰ = دایره)
+  hasCorners: boolean;
+  growth: number; // میزان افزایش نسبت به قطر واقعی
+} {
+  const s = BLANK_SHAPES.find((b) => b.id === shape);
+  const inR = blankD / 2;
+  if (!s || s.sides === 0) {
+    return { maxRotD: blankD, inR, outR: inR, sides: 0, hasCorners: false, growth: 0 };
+  }
+  const outR = inR / Math.cos(Math.PI / s.sides);
+  return {
+    maxRotD: outR * 2,
+    inR,
+    outR,
+    sides: s.sides,
+    hasCorners: true,
+    growth: outR * 2 - blankD,
+  };
+}
+
+export interface Params {
+  blankD: number; // قطر خام
+  blankL: number; // طول خام
+  blankShape: BlankShape; // شکل مقطع خام
+  doc: number; // عمق بار خشن (شعاع)
+  offsetDist: number; // فاصله آفست — مرجع مراحل خشن قبل از پرداخت
+  feedRough: number; // mm/min
+  feedFinish: number; // mm/min
+  rpm: number;
+  tool: ToolSpec; // مشخصات مهندسی ابزار
+  safety: number; // فاصله امن جمع‌کردن
+  roughMode: RoughMode; // روش خشن‌تراشی
+  ramp: boolean; // اتصال پیوسته بین مسیرهای خشن (بدون G0 — فرورفتن مستقیم برشی)
+  simpleFeed: boolean; // فیدر بهینه: همهٔ فیدرها به دو F اصلی (خشن/پرداخت) ساده شوند
+  zoneOrder: number[]; // ترتیب دستی نواحی (اندیس ناحیه‌ها) — آرایه خالی = ترتیب خودکار
+  zoneBounds: number[]; // مرزهای دستی داخلی نواحی (Z) — آرایه خالی = تقسیم خودکار
+  lineNumbers: boolean;
+  ops: Op[]; // زنجیره عملیات تراش (استراتژی)
+  format: CodeFormat; // سبک خروجی جی‌کد
+}
+
+/* ---------------- مشخصات مهندسی ابزار ---------------- */
+
+export type ToolType = "angle" | "round" | "groove";
+
+/** دستهٔ تراش اینسرت V 35° — زاویه‌های استاندارد */
+export type ToolHand = "center" | "left" | "right";
+
+export const HAND_INFO: Record<ToolHand, { name: string; desc: string; k: number }> = {
+  center: { name: "وسط‌تراش", desc: "متقارن — زاویه ۹۰°", k: 90 },
+  right: { name: "راست‌تراش", desc: "لبهٔ اصلی راست — ۸۷°", k: 87 },
+  left: { name: "چپ‌تراش", desc: "لبهٔ اصلی چپ — ۹۳°", k: 93 },
+};
+
+export interface ToolSpec {
+  type: ToolType;
+  hand: ToolHand; // دستهٔ تراش (فقط اینسرت V 35°)
+  angle: number; // زاویهٔ اینسرت — ثابت ۳۵ درجه
+  nose: number; // شعاع نوک اینسرت (mm)
+  size: number; // طول لبه اینسرت (mm)
+  radius: number; // شعاع اینسرت گرد (mm)
+  width: number; // پهنای تیغه شیارزن (mm)
+  corner: number; // شعاع گوشه شیارزن (mm)
+  shank: number; // پهنای دنباله (mm)
+}
+
+export const INSERT_ANGLE = 35; // زاویهٔ اینسرت V — ثابت
+
+export const DEFAULT_TOOL: ToolSpec = {
+  type: "angle",
+  hand: "center",
+  angle: INSERT_ANGLE,
+  nose: 0.2,
+  size: 16,
+  radius: 6,
+  width: 3,
+  corner: 0.2,
+  shank: 12,
+};
+
+/** شعاع‌های نوک استاندارد ISO */
+export const NOSE_RADII = [0.2, 0.4, 0.8, 1.2, 1.6];
+
+export function normalizeTool(raw: unknown, legacyW?: number): ToolSpec {
+  const base = { ...DEFAULT_TOOL };
+  if (raw && typeof raw === "object") {
+    const r = raw as Partial<ToolSpec>;
+    if (r.type === "angle" || r.type === "round" || r.type === "groove") base.type = r.type;
+    if (r.hand === "center" || r.hand === "left" || r.hand === "right") base.hand = r.hand;
+    const nums: (keyof ToolSpec)[] = ["angle", "nose", "size", "radius", "width", "corner", "shank"];
+    for (const k of nums) {
+      const v = r[k];
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) (base[k] as number) = v;
+    }
+    return base;
+  }
+  if (typeof legacyW === "number" && Number.isFinite(legacyW) && legacyW > 0) {
+    base.type = "groove";
+    base.width = legacyW;
+  }
+  return base;
+}
+
+/* پروفایل برشی ابزار: c(dz) = ارتفاع کف ابزار نسبت به نوک در فاصلهٔ محوری dz */
+export interface ToolProfile {
+  min: number;
+  max: number;
+  pts: [number, number][]; // [dz, c]
+  height: number; // ارتفاع اینسرت برای ترسیم
+}
+
+export function toolProfile(t: ToolSpec): ToolProfile {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const pts: [number, number][] = [];
+  let min = 0;
+  let max = 1;
+  let height = 6;
+  const step = 0.2;
+
+  if (t.type === "groove") {
+    const w = Math.max(0.5, t.width);
+    const rc = Math.min(Math.max(0, t.corner), w / 2);
+    min = -w / 2;
+    max = w / 2;
+    height = Math.max(4, w * 1.6);
+    void rad;
+    for (let dz = min; dz <= max + 1e-9; dz += step) {
+      const z = Math.min(max, dz);
+      const edge = w / 2 - rc;
+      const over = Math.abs(z) - edge;
+      const c = over > 0 ? rc - Math.sqrt(Math.max(0, rc * rc - over * over)) : 0;
+      pts.push([z, c]);
+    }
+    pts.push([max, pts[pts.length - 1][1]]);
+  } else if (t.type === "round") {
+    const R = Math.max(0.5, t.radius);
+    min = -R;
+    max = R;
+    height = R * 2;
+    for (let dz = -R; dz <= R + 1e-9; dz += step) {
+      const z = Math.min(R, dz);
+      pts.push([z, R - Math.sqrt(Math.max(0, R * R - z * z))]);
+    }
+    pts.push([R, R - Math.sqrt(Math.max(0, R * R - R * R))]);
+  } else {
+    /* اینسرت V 35° — زاویهٔ Included ثابت، جهت‌گیری بر اساس دستهٔ تراش      */
+    /* هندسهٔ دقیق: دو لبهٔ صاف + کمان نوک که بر هر دو لبه مماس است            */
+    const INC = INSERT_ANGLE;
+    const S = Math.max(3, t.size);
+    const Rn = Math.max(0, Math.min(t.nose, S / 4));
+    /* زاویهٔ لبهٔ چپ (aL) و راست (aR) نسبت به محور Z — aL−aR = ۳۵° */
+    let aL: number;
+    let aR: number;
+    if (t.hand === "center") {
+      aL = 90 + INC / 2; // ۱۰۷.۵°
+      aR = 90 - INC / 2; // ۷۲.۵°
+    } else if (t.hand === "right") {
+      aR = 87; // لبهٔ اصلی نزدیک قائم در سمت راست
+      aL = aR + INC; // لبهٔ فرعی ۵۸° به سمت چپ
+    } else {
+      aL = 93; // لبهٔ اصلی نزدیک قائم در سمت چپ
+      aR = aL - INC; // لبهٔ فرعی ۵۸° به سمت راست
+    }
+    const rL = rad(aL);
+    const rR = rad(aR);
+    const sL = Math.tan(rL); // منفی
+    const sR = Math.tan(rR); // مثبت
+    const lineC = (dz: number) => (dz < 0 ? dz * sL : dz * sR);
+
+    /* مرکز کمان نوک: هم‌فاصلهٔ Rn از هر دو لبه (درون V) */
+    let xc = 0;
+    let yc = Rn;
+    const det = Math.sin(rL - rR);
+    if (Rn > 0 && Math.abs(det) > 1e-9) {
+      xc = (Rn * (Math.cos(rR) + Math.cos(rL))) / det;
+      yc = (Rn * (Math.sin(rL) + Math.sin(rR))) / det;
+    }
+    const arcC = (dz: number): number => {
+      const dx = dz - xc;
+      if (Rn <= 0 || Math.abs(dx) > Rn) return -Infinity;
+      return yc - Math.sqrt(Rn * Rn - dx * dx);
+    };
+
+    min = S * Math.cos(rL);
+    max = S * Math.cos(rR);
+    height = Math.max(4, S * 0.95);
+    for (let dz = min; dz <= max + 1e-9; dz += step) {
+      const z = Math.min(max, dz);
+      pts.push([z, Math.max(lineC(z), arcC(z))]);
+    }
+    pts.push([max, Math.max(lineC(max), arcC(max))]);
+  }
+  /* تضمین نمونهٔ دقیق در نوک ابزار (dz = 0) */
+  if (pts.length >= 2 && pts[0][0] < -1e-9 && pts[pts.length - 1][0] > 1e-9) {
+    let k = 0;
+    while (k < pts.length - 1 && pts[k + 1][0] < 0) k++;
+    const [z1, c1] = pts[k];
+    const [z2, c2] = pts[k + 1];
+    const c0 = c1 + (c2 - c1) * ((0 - z1) / (z2 - z1));
+    pts.splice(k + 1, 0, [0, c0]);
+  }
+  return { min, max, pts, height };
+}
+
+export function toolDesc(t: ToolSpec): string {
+  if (t.type === "round") return `ROUND INSERT R${t.radius}`;
+  if (t.type === "groove") return `GROOVE TOOL W${t.width}`;
+  return `V${INSERT_ANGLE} ${HAND_INFO[t.hand].name.toUpperCase()} INSERT NOSE R${t.nose}`;
+}
+
+export type CodeFormat = "modal" | "std";
+
+export const RAPID_RATE = 2500; // mm/min
+
+let opUid = 1;
+
+export const DEFAULT_PARAMS: Params = {
+  blankD: 60,
+  blankL: 200,
+  blankShape: "square",
+  doc: 3,
+  offsetDist: 0.5,
+  feedRough: 220,
+  feedFinish: 110,
+  rpm: 1500,
+  tool: { ...DEFAULT_TOOL },
+  safety: 2,
+  roughMode: "zone",
+  ramp: true,
+  simpleFeed: true,
+  zoneOrder: [],
+  zoneBounds: [],
+  lineNumbers: true,
+  ops: makeOps(["round", "rough-d", "offset", "finish"]),
+  format: "modal",
+};
+
+/* نرمال‌سازی پارامترهای ذخیره‌شده (سازگاری با نسخه‌های قبل) */
+export function normalizeParams(
+  raw: (Partial<Params> & { facing?: boolean; spring?: boolean; toolW?: number; finAllow?: number; zigzag?: boolean }) | undefined,
+  legacy = false
+): Params {
+  const base: Params = { ...DEFAULT_PARAMS, ops: makeOps(STRATEGIES[0].types), tool: { ...DEFAULT_TOOL } };
+  if (!raw) return base;
+  const keys: (keyof Params)[] = ["blankD", "blankL", "doc", "offsetDist", "feedRough", "feedFinish", "rpm", "safety", "lineNumbers", "ramp", "simpleFeed"];
+  for (const k of keys) {
+    const v = raw[k];
+    if (typeof v === "number" && Number.isFinite(v)) (base[k] as number) = v as number;
+    else if (typeof v === "boolean") (base[k] as boolean) = v as boolean;
+  }
+  /* مهاجرت «اضافه پرداخت» قدیمی به «فاصله آفست» */
+  if (typeof raw.finAllow === "number" && Number.isFinite(raw.finAllow)) base.offsetDist = raw.finAllow;
+  /* روش خشن‌تراشی + مهاجرت سوئیچ زیگزاگ قدیمی */
+  if (raw.roughMode === "classic" || raw.roughMode === "zigzag" || raw.roughMode === "zone") base.roughMode = raw.roughMode;
+  else if (typeof raw.zigzag === "boolean") base.roughMode = raw.zigzag ? "zigzag" : "classic";
+  /* شکل مقطع خام */
+  if (raw.blankShape === "circle" || raw.blankShape === "square" || raw.blankShape === "hex" || raw.blankShape === "octagon") {
+    base.blankShape = raw.blankShape;
+  }
+  /* ترتیب دستی نواحی — فقط آرایه‌ای از اعداد معتبر پذیرفته می‌شود */
+  if (Array.isArray(raw.zoneOrder) && raw.zoneOrder.every((v) => typeof v === "number" && Number.isInteger(v) && v >= 0)) {
+    base.zoneOrder = [...raw.zoneOrder];
+  }
+  /* مرزهای دستی نواحی — مرتب، داخل قطعه و متمایز */
+  if (Array.isArray(raw.zoneBounds) && raw.zoneBounds.every((v) => typeof v === "number" && Number.isFinite(v))) {
+    base.zoneBounds = [...raw.zoneBounds].sort((a, b) => a - b);
+  }
+  const ops = normalizeOps(raw.ops, legacy);
+  if (ops) base.ops = ops;
+  if (raw.format === "modal" || raw.format === "std") base.format = raw.format;
+  base.tool = normalizeTool(raw.tool, raw.toolW);
+  return base;
+}
+
+export interface Sample {
+  z: number;
+  r: number;
+}
+
+export type SegKind = "rapid" | "round" | "face" | "rough" | "roughz" | "copy" | "offset" | "finish";
+
+/* ---------------- عملیات و استراتژی‌های تراش ---------------- */
+
+export type OpType = "round" | "face" | "rough-d" | "rough-z" | "copy" | "offset" | "finish";
+
+export interface Op {
+  id: number;
+  type: OpType;
+  on: boolean;
+}
+
+export const OP_INFO: Record<OpType, { name: string; desc: string; color: string }> = {
+  round: { name: "گرد کردن گوشه‌ها", desc: "برداشت قسمت اضافی مقطع تا استوانهٔ قطر واقعی", color: "#b48ee0" },
+  face: { name: "پیشانی‌تراشی", desc: "تراش سطح سر قطعه تا شعاع طرح", color: "#e3a94e" },
+  "rough-d": { name: "خشن شعاعی G71", desc: "لایه‌های قطری با حرکت طولی", color: "#45b394" },
+  "rough-z": { name: "خشن محوری G72", desc: "فرورفتن شعاعی در گام‌های طولی", color: "#6ab0d8" },
+  copy: { name: "کپی‌تراشی", desc: "مسیرهای موازی با خط طرح", color: "#a3c15c" },
+  offset: { name: "آفست", desc: "خط موازی با طرح — مرجع مراحل خشن", color: "#f59a80" },
+  finish: { name: "پرداخت نهایی", desc: "حرکت دقیق روی خط اصلی طرح", color: "#e0703c" },
+};
+
+export const ALL_OP_TYPES: OpType[] = ["round", "face", "rough-d", "rough-z", "copy", "offset", "finish"];
+
+export interface Strategy {
+  id: string;
+  name: string;
+  types: OpType[];
+}
+
+export const STRATEGIES: Strategy[] = [
+  { id: "g71", name: "استاندارد شعاعی", types: ["round", "rough-d", "offset", "finish"] },
+  { id: "g72", name: "محوری پله‌ای", types: ["round", "rough-z", "offset", "finish"] },
+  { id: "copy", name: "کپی‌تراشی", types: ["round", "copy", "offset", "finish"] },
+];
+
+export function makeOps(types: OpType[]): Op[] {
+  return types.map((t) => ({ id: opUid++, type: t, on: true }));
+}
+
+export function normalizeOps(raw: unknown, legacy = false): Op[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const out: Op[] = [];
+  for (const o of raw as { type?: unknown; on?: unknown; id?: unknown }[]) {
+    if (!o || typeof o.type !== "string") continue;
+    let t = o.type;
+    if (legacy) {
+      /* داده‌های پیش از نسخه ۲: «offset» کپی‌تراشی بود و «spring» پاس فنری */
+      if (t === "offset") t = "copy";
+      else if (t === "spring") t = "offset";
+    }
+    if ((ALL_OP_TYPES as string[]).includes(t)) {
+      out.push({ id: typeof o.id === "number" ? o.id : opUid++, type: t as OpType, on: o.on !== false });
+    }
+  }
+  if (legacy && out.length) {
+    /* «آفست» (پاس فنری سابق) همیشه بعد از پرداخت بود؛ حالا باید قبل از آن باشد */
+    const offsets = out.filter((o) => o.type === "offset");
+    if (offsets.length) {
+      const rest = out.filter((o) => o.type !== "offset");
+      const fi = rest.findIndex((o) => o.type === "finish");
+      if (fi >= 0) rest.splice(fi, 0, ...offsets);
+      else rest.push(...offsets);
+      return rest;
+    }
+  }
+  return out.length ? out : null;
+}
+
+export interface Seg {
+  motion: 0 | 1; // 0 = G0 سریع ، 1 = G1 برشی
+  x1: number; // قطر شروع
+  z1: number;
+  x2: number; // قطر پایان
+  z2: number;
+  feed: number;
+  line: number; // اندیس خط در آرایه خطوط جی‌کد
+  kind: SegKind;
+  op: OpType | "sys"; // عملیات مولد این حرکت
+  opId: number; // شناسه نمونه عملیات (برای نمایش ایزوله و خروجی تفکیکی) — حرکات سیستمی: 1-
+  note?: string[]; // کامنت‌های قبل از این حرکت (فقط فرمت استاندارد)
+}
+
+export interface GenResult {
+  lines: string[];
+  segs: Seg[];
+  samples: Sample[];
+  cutLen: number;
+  rapidLen: number;
+  timeSec: number;
+  volumeCm3: number;
+  roughLayers: number;
+  format: CodeFormat;
+}
+
+const f2 = (v: number) => (Math.round(v * 100) / 100).toFixed(2);
+
+/* ---------------- نمونه‌برداری از پروفایل (Catmull-Rom) ---------------- */
+
+function cr(p0: number, p1: number, p2: number, p3: number, t: number) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return (
+    0.5 *
+    (2 * p1 +
+      (-p0 + p2) * t +
+      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+      (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+  );
+}
+
+export function sampleProfile(points: PPoint[], blankR: number): Sample[] {
+  const clampR = (r: number, R: number) => Math.min(Math.max(r, 0), R);
+  const pts = [...points].sort((a, b) => a.z - b.z);
+  const out: Sample[] = [];
+  if (pts.length === 0) return out;
+  if (pts.length === 1) return [{ z: pts[0].z, r: clampR(pts[0].r, blankR) }];
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const segLen = Math.hypot(p2.z - p1.z, p2.r - p1.r);
+    const steps = Math.max(6, Math.ceil(segLen / 1.2));
+    const smooth = p1.smooth && p2.smooth;
+    const startJ = i === 0 ? 0 : 1;
+    for (let j = startJ; j <= steps; j++) {
+      const t = j / steps;
+      let z: number, r: number;
+      if (smooth) {
+        z = cr(p0.z, p1.z, p2.z, p3.z, t);
+        r = cr(p0.r, p1.r, p2.r, p3.r, t);
+      } else {
+        z = p1.z + (p2.z - p1.z) * t;
+        r = p1.r + (p2.r - p1.r) * t;
+      }
+      out.push({ z, r: clampR(r, blankR) });
+    }
+  }
+  out.sort((a, b) => a.z - b.z);
+  return out;
+}
+
+/* ---------------- بازه‌های برش برای یک لایه خشن ---------------- */
+
+function cutIntervals(samples: Sample[], layer: number) {
+  const raw: { a: number; b: number }[] = [];
+  let cur: { a: number; b: number } | null = null;
+  for (const s of samples) {
+    if (s.r < layer - 0.01) {
+      if (!cur) cur = { a: s.z, b: s.z };
+      else cur.b = s.z;
+    } else if (cur) {
+      raw.push(cur);
+      cur = null;
+    }
+  }
+  if (cur) raw.push(cur);
+  // ادغام بازه‌های نزدیک به هم
+  const merged: { a: number; b: number }[] = [];
+  for (const iv of raw) {
+    const last = merged[merged.length - 1];
+    if (last && iv.a - last.b < 0.9) last.b = iv.b;
+    else merged.push({ ...iv });
+  }
+  return merged.filter((iv) => iv.b - iv.a > 0.3);
+}
+
+/* ---------------- نواحی قطعه برای خشن ناحیه‌ای ----------------          */
+/* پروفایل بر اساس قله‌ها و دره‌های شعاعی به نواحی یکنواخت تقسیم می‌شود تا   */
+/* ابزار هر ناحیه را به‌طور کامل (همهٔ لایه‌ها) با الگوی رفت‌وبرگشتی تراش    */
+/* دهد و سپس به ناحیهٔ بعد برود — بدون جابه‌جایی‌های مکرر بین نواحی.         */
+export function findZones(samples: Sample[]): { a: number; b: number }[] {
+  const n = samples.length;
+  const z0 = samples[0]?.z ?? 0;
+  const z1 = samples[n - 1]?.z ?? 0;
+  if (n < 7) return [{ a: z0, b: z1 }];
+  // هموارسازی شعاع برای حذف نویز
+  const rs: number[] = samples.map((_, i) => {
+    let s = 0;
+    let c = 0;
+    for (let j = Math.max(0, i - 2); j <= Math.min(n - 1, i + 2); j++) {
+      s += samples[j].r;
+      c++;
+    }
+    return s / c;
+  });
+  // پنجرهٔ تشخیص برحسب میلی‌متر (~۶mm) و آستانهٔ برجستگی نسبی به دامنهٔ شعاع
+  const dz = (z1 - z0) / (n - 1);
+  const W = Math.max(3, Math.round(6 / Math.max(0.2, dz)));
+  let minR = Infinity;
+  let maxR = -Infinity;
+  for (const r of rs) {
+    if (r < minR) minR = r;
+    if (r > maxR) maxR = r;
+  }
+  const prom = Math.max(0.5, (maxR - minR) * 0.05);
+
+  /* مرزها فقط روی نوک هر قله (بیشینهٔ شعاع) قرار می‌گیرند — دره‌ها مرز نیستند.   */
+  /* برجستگی هر قله نسبت به دره‌های مجاورش سنجیده می‌شود تا هم قله‌های تیز و هم  */
+  /* قله‌های پهن (مثل شکم گلدان) شناسایی شوند.                                  */
+  const peaks: { z: number; r: number }[] = [];
+  const valleys: { z: number; r: number }[] = [];
+  for (let i = W; i < n - W; i++) {
+    let isMax = true;
+    let isMin = true;
+    for (let j = i - W; j <= i + W; j++) {
+      if (rs[j] > rs[i]) isMax = false;
+      if (rs[j] < rs[i]) isMin = false;
+    }
+    if (isMax) peaks.push({ z: samples[i].z, r: rs[i] });
+    else if (isMin) valleys.push({ z: samples[i].z, r: rs[i] });
+  }
+  // برجستگی کلاسیک: ارتفاع قله نسبت به بلندترین درهٔ مجاور (یا لبه‌ها)
+  const peakBounds: { z: number; r: number }[] = [];
+  for (const pk of peaks) {
+    let leftR = rs[0];
+    let rightR = rs[n - 1];
+    let foundLeft = false;
+    let foundRight = false;
+    for (const v of valleys) {
+      if (v.z < pk.z) {
+        leftR = v.r;
+        foundLeft = true;
+      } else if (v.z > pk.z && !foundRight) {
+        rightR = v.r;
+        foundRight = true;
+      }
+    }
+    if (!foundLeft) leftR = rs[0];
+    if (!foundRight) rightR = rs[n - 1];
+    const prominence = pk.r - Math.max(leftR, rightR);
+    if (prominence > prom) peakBounds.push(pk);
+  }
+  // حذف قله‌های نزدیک به هم (کمتر از ۳ میلی‌متر) — بلندترین قلهٔ هر خوشه نگه داشته می‌شود
+  const dedupPeak: { z: number; r: number }[] = [];
+  for (const pk of peakBounds) {
+    const last = dedupPeak[dedupPeak.length - 1];
+    if (last && pk.z - last.z < 3) {
+      if (pk.r > last.r) dedupPeak[dedupPeak.length - 1] = pk;
+    } else {
+      dedupPeak.push(pk);
+    }
+  }
+  const dedup: number[] = dedupPeak.map((p) => p.z);
+  const bounds: number[] = [z0, ...dedup, z1];
+  bounds.sort((a, b) => a - b);
+  // ساخت نواحی از کل بازهٔ قطعه (ابتدا، قله‌ها، انتها) و ادغام بخش‌های کوتاه
+  const zones: { a: number; b: number }[] = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    if (bounds[i + 1] - bounds[i] > 0.3) zones.push({ a: bounds[i], b: bounds[i + 1] });
+  }
+  const merged: { a: number; b: number }[] = [];
+  for (const z of zones) {
+    if (z.b - z.a < 4 && merged.length) merged[merged.length - 1].b = z.b;
+    else merged.push({ ...z });
+  }
+  if (merged.length > 1 && merged[merged.length - 1].b - merged[merged.length - 1].a < 4) {
+    merged[merged.length - 2].b = merged[merged.length - 1].b;
+    merged.pop();
+  }
+  return merged.length ? merged : [{ a: z0, b: z1 }];
+}
+
+/* نواحی نهایی: اگر کاربر مرزهای دستی معتبر تعیین کرده باشد از آن استفاده می‌شود، */
+/* در غیر این صورت تقسیم خودکار بر اساس قله‌ها و دره‌ها.                            */
+export function resolveZones(samples: Sample[], manualBounds: number[], z0: number, z1: number): { a: number; b: number }[] {
+  if (manualBounds.length) {
+    const bounds = [...manualBounds]
+      .filter((v) => v > z0 + 0.3 && v < z1 - 0.3)
+      .sort((a, b) => a - b)
+      .filter((v, i, arr) => i === 0 || v - arr[i - 1] >= 1);
+    if (bounds.length) {
+      const all = [z0, ...bounds, z1];
+      const zones: { a: number; b: number }[] = [];
+      for (let i = 0; i < all.length - 1; i++) {
+        if (all[i + 1] - all[i] > 0.3) zones.push({ a: all[i], b: all[i + 1] });
+      }
+      if (zones.length) return zones;
+    }
+  }
+  return findZones(samples);
+}
+
+/* ---------------- تولید مسیر ابزار و جی‌کد ---------------- */
+
+export function generate(pts: PPoint[], p: Params): GenResult {
+  const R = p.blankD / 2;
+  const samples = sampleProfile(pts, R);
+  const segs: Seg[] = [];
+
+  if (samples.length < 2) {
+    return {
+      lines: ["%", p.format === "modal" ? "M05" : "(NO PROFILE)", "M02", "%"],
+      segs: [],
+      samples,
+      cutLen: 0,
+      rapidLen: 0,
+      timeSec: 0,
+      volumeCm3: 0,
+      roughLayers: 0,
+      format: p.format,
+    };
+  }
+
+  /* صفحهٔ جمع‌کردن باید خارج از پوشش دورانی باشد — برای مقاطع غیر دایره‌ای      */
+  /* موادِ در حال چرخش تا قطر محیطی گسترده‌اند، نه فقط قطر واقعی.                */
+  const envMaxRotD = rotationalEnvelope(p.blankD, p.blankShape).maxRotD;
+  const home = { x: envMaxRotD + 20, z: p.blankL + 10 };
+  const retractX = envMaxRotD + 2 * p.safety;
+  let cur = { ...home };
+  let curOp: OpType | "sys" = "sys";
+  let curOpId = -1;
+  let notes: string[] = [];
+  const note = (s: string) => notes.push(s);
+
+  const pushSeg = (motion: 0 | 1, x: number, z: number, feed: number, kind: SegKind) => {
+    segs.push({
+      motion,
+      x1: cur.x,
+      z1: cur.z,
+      x2: x,
+      z2: z,
+      feed: motion ? feed : RAPID_RATE,
+      line: -1,
+      kind,
+      op: curOp,
+      opId: curOpId,
+      note: notes.length ? notes : undefined,
+    });
+    notes = [];
+    cur = { x, z };
+  };
+
+  /* حرکت سریعِ امن — هر G0 به‌جای یک مسیر موربِ مستقیم (که می‌تواند از داخل      */
+  /* قطعهٔ تراش‌خورده عبور کند و در اجرا باعث برخورد تیغ با طرح شود)، به سه       */
+  /* حرکت محوریِ امن تجزیه می‌شود:                                              */
+  /*   ۱) جمع‌کردن شعاعی تا فاصلهٔ امن (حرکت به بیرون — همیشه امن)                */
+  /*   ۲) جابه‌جایی طولی در فاصلهٔ امن (X=فاصله امن > قطر قطعه)                   */
+  /*   ۳) نزدیک‌شدن شعاعی تا نقطهٔ شروع برش (که خارج از قطعه انتخاب می‌شود)        */
+  const mv = (motion: 0 | 1, x: number, z: number, feed: number, kind: SegKind) => {
+    if (motion === 0) {
+      const eps = 1e-9;
+      if (cur.x < retractX - eps) pushSeg(0, retractX, cur.z, 0, "rapid");
+      if (Math.abs(z - cur.z) > eps) pushSeg(0, Math.max(cur.x, retractX), z, 0, "rapid");
+      if (Math.abs(x - cur.x) > eps) pushSeg(0, x, z, 0, "rapid");
+      return;
+    }
+    pushSeg(1, x, z, feed, kind);
+  };
+
+  /* حرکت سریعِ مستقیم بدون تجزیهٔ امن — فقط برای جابه‌جایی‌های طولی‌ای استفاده   */
+  /* می‌شود که امن‌بودنشان جداگانه با clearLongitudinal اثبات شده است (زیگزاگ)      */
+  const rawRapid = (x: number, z: number) => pushSeg(0, x, z, 0, "rapid");
+  const z0 = samples[0].z;
+  const zEnd = samples[samples.length - 1].z;
+  const r0 = samples[0].r;
+
+  let minR = Infinity;
+  for (const s of samples) if (s.r < minR) minR = s.r;
+
+  /* خط آفست — موازی با خط اصلی طرح در فاصلهٔ offsetDist (مرجع مراحل خشن) */
+  const OD = Math.max(0, p.offsetDist);
+  const offSamples: Sample[] = samples.map((s) => ({ z: s.z, r: Math.min(R, s.r + OD) }));
+  const floorR = minR + OD;
+
+  /* ردیابی سطحِ واقعی تراش‌خورده برای محاسبهٔ امنِ جابه‌جایی‌های زیگزاگ — همانند   */
+  /* شبیه‌ساز، شعاع باقی‌ماندهٔ قطعه پس از هر برش به‌روز می‌شود تا شعاعِ عبورِ طولی  */
+  /* همیشه بالاتر از موادِ موجود باشد.                                             */
+  const NG = 600;
+  const physR = new Float64Array(NG + 1).fill(R);
+  const physCut = (a: number, b: number, r: number) => {
+    const i0 = Math.max(0, Math.round((Math.min(a, b) / p.blankL) * NG));
+    const i1 = Math.min(NG, Math.round((Math.max(a, b) / p.blankL) * NG));
+    for (let i = i0; i <= i1; i++) if (r < physR[i]) physR[i] = r;
+  };
+  const minSafeRadius = (zFrom: number, zTo: number): number => {
+    const lo = Math.min(zFrom, zTo);
+    const hi = Math.max(zFrom, zTo);
+    const i0 = Math.max(0, Math.round((lo / p.blankL) * NG));
+    const i1 = Math.min(NG, Math.round((hi / p.blankL) * NG));
+    let mx = 0;
+    for (let i = i0; i <= i1; i++) if (physR[i] > mx) mx = physR[i];
+    return mx + 0.2; // حاشیهٔ امن
+  };
+
+  const radiusAt = (z: number): number => {
+    if (z <= samples[0].z) return samples[0].r;
+    for (let i = 1; i < samples.length; i++) {
+      if (samples[i].z >= z) {
+        const a = samples[i - 1];
+        const b = samples[i];
+        const t = (z - a.z) / Math.max(1e-9, b.z - a.z);
+        return a.r + (b.r - a.r) * t;
+      }
+    }
+    return samples[samples.length - 1].r;
+  };
+
+  /* شعاع خط آفست (پروفایل + اضافه پرداخت) در هر z — مواد زیر این خط نباید خشن شوند */
+  const offsetRadiusAt = (z: number): number => {
+    if (z <= offSamples[0].z) return offSamples[0].r;
+    for (let i = 1; i < offSamples.length; i++) {
+      if (offSamples[i].z >= z) {
+        const a = offSamples[i - 1];
+        const b = offSamples[i];
+        const t = (z - a.z) / Math.max(1e-9, b.z - a.z);
+        return a.r + (b.r - a.r) * t;
+      }
+    }
+    return offSamples[offSamples.length - 1].r;
+  };
+
+  /* ایمنی اتصال مورب (Ramp): خط مستقیم از (fromR,fromZ) به (toR,toZ) فقط وقتی       */
+  /* مجاز است که در تمام طولش بالاتر از خط آفست بماند؛ در غیر این صورت با منحنی     */
+  /* اصلی تداخل کرده و آن را می‌تراشد — پس باید به مسیر امن G0 بازگشت.             */
+  const rampIsSafe = (fromZ: number, fromR: number, toZ: number, toR: number): boolean => {
+    const loZ = Math.min(fromZ, toZ);
+    const hiZ = Math.max(fromZ, toZ);
+    const steps = Math.max(8, Math.ceil(Math.abs(hiZ - loZ) / 2));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const z = fromZ + (toZ - fromZ) * t;
+      const r = fromR + (toR - fromR) * t;
+      if (z < offSamples[0].z - 0.01 || z > offSamples[offSamples.length - 1].z + 0.01) continue;
+      if (r < offsetRadiusAt(z) - 0.05) return false;
+    }
+    return true;
+  };
+
+  const profilePath = (kind: SegKind, feed: number) => {
+    mv(1, 2 * r0, z0, feed, kind);
+    for (let i = 1; i < samples.length; i++) mv(1, 2 * samples[i].r, samples[i].z, feed, kind);
+  };
+
+  /* اجرای زنجیره عملیات (استراتژی تراش) */
+  for (const op of p.ops) {
+    if (!op.on) continue;
+    curOpId = op.id;
+    switch (op.type) {
+      /* گرد کردن گوشه‌ها — برای مقاطع غیر دایره‌ای: برداشت قسمت اضافی از        */
+      /* شعاع محیطی (دورترین گوشه) تا شعاع محاطی (قطر واقعی) تا مقطع دایره‌ای شود. */
+      /* برای مقطع دایره‌ای این عملیات بی‌اثر است.                                */
+      case "round": {
+        curOp = "round";
+        const envr = rotationalEnvelope(p.blankD, p.blankShape);
+        if (envr.hasCorners && envr.outR > R + 0.02) {
+          const shName = BLANK_SHAPES.find((b) => b.id === p.blankShape)?.name ?? p.blankShape;
+          note(`ROUNDING CORNERS - ${f2(2 * envr.outR)} TO ${f2(2 * R)} (ZIGZAG)`);
+          /* گرد کردنِ رفت‌وبرگشتی: جهت تراش در هر لایه معکوس می‌شود و ابزار     */
+          /* به‌جای جمع‌کردن و بازگشت به نقطه شروع، فقط با یک فرورفتن شعاعی در     */
+          /* انتهای همان مسیر، لایه بعد را در جهت مخالف ادامه می‌دهد.             */
+          const roundLayers: number[] = [];
+          let layer = envr.outR - p.doc;
+          let guard = 0;
+          while (layer > R + 1e-6 && guard < 40) {
+            roundLayers.push(layer);
+            layer -= p.doc;
+            guard++;
+          }
+          roundLayers.push(R); // لایه پایانی دقیقاً روی قطر واقعی
+
+          let dir: 1 | -1 = 1;
+          let atZ = 0;
+          for (let i = 0; i < roundLayers.length; i++) {
+            const r = roundLayers[i];
+            const startZ = dir === 1 ? 0 : p.blankL;
+            const endZ = dir === 1 ? p.blankL : 0;
+            note(`ROUND LAYER X${f2(2 * r)}${dir === -1 ? " (RETURN)" : ""}`);
+            if (i === 0) mv(0, retractX, startZ, 0, "rapid"); // موقعیت‌یابی امن اولیه
+            mv(1, 2 * r, startZ, p.feedRough * 0.7, "round"); // فرورفتن شعاعی
+            if (Math.abs(endZ - startZ) > 0.01) mv(1, 2 * r, endZ, p.feedRough, "round"); // تراش طولی
+            atZ = endZ;
+            dir = dir === 1 ? -1 : 1;
+          }
+          note(`ROUND DONE AT X${f2(2 * R)} (${shName})`);
+          mv(0, retractX, atZ, 0, "rapid"); // جمع‌کردن پایانی
+        }
+        break;
+      }
+      /* پیشانی‌تراشی */
+      case "face": {
+        curOp = "face";
+        if (R - r0 > 0.05) {
+          note("FACING");
+          mv(0, p.blankD, z0, 0, "face");
+          mv(1, 2 * r0, z0, p.feedRough * 0.8, "face");
+          mv(0, retractX, z0, 0, "rapid");
+        }
+        break;
+      }
+      /* خشن شعاعی — لایه‌های قطری با حرکت طولی (G71)                            */
+      /* حالت رفت‌وبرگشتی (زیگزاگ): جهت تراش در هر برش معکوس می‌شود و ابزار پس از  */
+      /* پایان یک مسیر، به‌جای جمع‌کردن کامل و بازگشت به نقطه شروع، با حداقل       */
+      /* جابه‌جاییِ امنِ شعاعی (فقط تا بالای موادِ موجود) مستقیماً از انتهای همان    */
+      /* مسیر، مسیر بعدی را در جهت مخالف ادامه می‌دهد.                              */
+      case "rough-d": {
+        curOp = "rough-d";
+
+        /* ------------------------------------------------------------------ */
+        /* حالت رفت‌وبرگشتی (زیگزاگ) — مارپیچ دنبال‌کنندهٔ منحنی، فقط بازه‌های فعال:  */
+        /* در هر گذر j فقط بازه‌هایی طی می‌شوند که هنوز به برش نیاز دارند (جایی که  */
+        /* پروفایل+آفست از لایهٔ قبل پایین‌تر است)؛ نواحیِ تمام‌شده دوباره تراش      */
+        /* نمی‌خورند. گذرِ رفت در یک جهت و گذرِ برگشت در جهت مخالف، هر دو باربرداری  */
+        /* می‌کنند. درون هر بازه ابزار منحنی  C(z)=max(پروفایل+آفست، شعاع‌لایه) را   */
+        /* دنبال می‌کند (نرم از روی قله و دره) و برای ردشدن از ناحیهٔ تمام‌شدهٔ بین */
+        /* دو بازه، یک عبور امنِ کوتاه کمی بالاتر از پروفایل انجام می‌شود. چون هر   */
+        /* گذر فقط به عمق «doc» برش می‌زند، نیروی برش پخش شده و برای چوب شکننده امن */
+        /* است و از رفت‌وآمد تکراری روی نواحی تمام‌شده جلوگیری می‌شود.             */
+        /* ------------------------------------------------------------------ */
+        if (p.roughMode === "zigzag") {
+          note("ROUGHING - CONTOUR SERPENTINE (ACTIVE REGIONS, CUTS BOTH WAYS)");
+          const F = offSamples;
+          let minF = Infinity;
+          for (const s of F) if (s.r < minF) minF = s.r;
+          const totalDepth = R - minF;
+          if (totalDepth > 0.02) {
+            const N = Math.max(1, Math.ceil(totalDepth / p.doc - 1e-9));
+            /* بیشینهٔ پروفایل آفست در یک بازهٔ طولی — برای عبور امن از ناحیهٔ تمام‌شده */
+            const maxFIn = (a: number, b: number) => {
+              let mx = -Infinity;
+              for (const s of F) if (s.z >= a - 0.01 && s.z <= b + 0.01 && s.r > mx) mx = s.r;
+              return mx === -Infinity ? minF : mx;
+            };
+            /* جهت شروع: نزدیک‌تر به موقعیت فعلی ابزار (مثلاً پایان گرد کردن) */
+            let forward = Math.abs(z0 - cur.z) <= Math.abs(zEnd - cur.z);
+            let first = true;
+            let lastEndZ = NaN;
+            let lastEndR = 0;
+            for (let j = 1; j <= N; j++) {
+              const prevLayer = R - (j - 1) * p.doc;
+              const layer = R - j * p.doc;
+              /* بازه‌های فعال این گذر: جایی که هنوز به برش نیاز است */
+              const activeRaw = cutIntervals(F, prevLayer);
+              if (!activeRaw.length) break;
+              note(`SERPENTINE PASS ${j}/${N} - X${f2(2 * layer)}${forward ? "" : " (RETURN)"}`);
+              /* گذرِ رفت چپ→راست و گذرِ برگشت راست→چپ؛ بازه‌ها هم در همان جهت طی می‌شوند */
+              const active = forward ? activeRaw : [...activeRaw].reverse();
+              for (const iv of active) {
+                const startZ = forward ? iv.a : iv.b;
+                const endZ = forward ? iv.b : iv.a;
+                if (first) {
+                  mv(0, retractX, startZ, 0, "rapid"); // موقعیت‌یابی اولیه
+                  first = false;
+                } else {
+                  /* عبور امن از ناحیهٔ تمام‌شدهٔ بین دو بازه — کوتاه و کمی بالاتر از پروفایل */
+                  const loZ = Math.min(lastEndZ, startZ);
+                  const hiZ = Math.max(lastEndZ, startZ);
+                  const clearR = maxFIn(loZ, hiZ) + Math.max(0.5, p.safety * 0.5);
+                  const travelR = Math.max(lastEndR, clearR);
+                  if (travelR > lastEndR + 1e-6) rawRapid(2 * travelR, lastEndZ);
+                  rawRapid(2 * travelR, startZ);
+                }
+                /* فرورفتن تا منحنی لایه در نقطهٔ ورود و دنبال‌کردن منحنی درون بازه */
+                const cStart = Math.max(offsetRadiusAt(startZ), layer);
+                mv(1, 2 * cStart, startZ, p.feedRough * 0.7, "rough");
+                const lo = Math.min(startZ, endZ);
+                const hi = Math.max(startZ, endZ);
+                const ptsIn = F.filter((s) => s.z > lo + 1e-6 && s.z < hi - 1e-6);
+                const ordered = forward ? ptsIn : [...ptsIn].reverse();
+                for (const s of ordered) mv(1, 2 * Math.max(s.r, layer), s.z, p.feedRough, "rough");
+                const cEnd = Math.max(offsetRadiusAt(endZ), layer);
+                if (Math.abs(endZ - startZ) > 0.01) mv(1, 2 * cEnd, endZ, p.feedRough, "rough");
+                lastEndZ = endZ;
+                lastEndR = cEnd;
+              }
+              forward = !forward; // گذر بعد در جهت مخالف
+            }
+            if (!Number.isNaN(lastEndZ)) mv(0, retractX, lastEndZ, 0, "rapid"); // جمع‌کردن پایانی
+          }
+          break;
+        }
+
+        note(
+          p.roughMode === "zone"
+            ? "ROUGHING - RADIAL LAYERS (BY ZONE)"
+            : "ROUGHING - RADIAL LAYERS"
+        );
+        if (p.ramp) note("CONTINUOUS RAMP LINKS - NO G0 BETWEEN PASSES");
+
+        /* فهرست برش‌ها — به ترتیب لایه (کلاسیک) یا به ترتیب ناحیه (ناحیه‌ای:      */
+        /* همهٔ لایه‌های ناحیهٔ اول، سپس همهٔ لایه‌های ناحیهٔ دوم و …)                  */
+        const cuts: { a: number; b: number; r: number }[] = [];
+        if (p.roughMode === "zone") {
+          /* نواحی: مرزهای دستی کاربر (در صورت اعتبار) جایگزین تقسیم خودکار می‌شوند؛ */
+          /* سپس ترتیب دستی (در صورت اعتبار) روی همان نواحی اعمال می‌شود.            */
+          let zones = resolveZones(offSamples, p.zoneBounds, z0, zEnd);
+          const ord = p.zoneOrder;
+          const isPerm =
+            ord.length === zones.length &&
+            ord.every((v) => v >= 0 && v < zones.length) &&
+            new Set(ord).size === zones.length;
+          if (isPerm) {
+            zones = ord.map((i) => zones[i]);
+          } else {
+            /* بهینه‌سازی شروع: اگر ترتیب دستی تعیین نشده باشد، نواحی از سمتی       */
+            /* پردازش می‌شوند که ابزار اکنون در آن‌جاست (مثلاً بعد از گرد کردن       */
+            /* گوشه‌ها که ابزار در انتهای همان مسیر ایستاده) — نه همیشه از چپ.     */
+            const mid = (z0 + zEnd) / 2;
+            if (cur.z > mid) zones = [...zones].reverse();
+          }
+          for (const zone of zones) {
+            let layer = R - p.doc;
+            let guard = 0;
+            while (layer > floorR + 1e-6 && guard < 80) {
+              guard++;
+              for (const iv of cutIntervals(offSamples, layer)) {
+                const a = Math.max(iv.a, zone.a);
+                const b = Math.min(iv.b, zone.b);
+                if (b - a > 0.3) cuts.push({ a, b, r: layer });
+              }
+              layer -= p.doc;
+            }
+          }
+        } else {
+          let layer = R - p.doc;
+          let guard = 0;
+          while (layer > floorR + 1e-6 && guard < 80) {
+            guard++;
+            for (const iv of cutIntervals(offSamples, layer)) cuts.push({ a: iv.a, b: iv.b, r: layer });
+            layer -= p.doc;
+          }
+        }
+
+        if (p.roughMode === "classic") {
+          /* روش کلاسیکِ یک‌طرفه */
+          let nL = 0;
+          let lastR = NaN;
+          for (const c of cuts) {
+            if (c.r !== lastR) {
+              nL++;
+              note(`LAYER ${nL} - X${f2(2 * c.r)}`);
+              lastR = c.r;
+            }
+            mv(0, retractX, c.a, 0, "rapid");
+            mv(1, 2 * c.r, c.a, p.feedRough * 0.7, "rough");
+            if (c.b - c.a > 0.01) mv(1, 2 * c.r, c.b, p.feedRough, "rough");
+            mv(0, retractX, c.b, 0, "rapid");
+          }
+          break;
+        }
+
+        /* روش رفت‌وبرگشتی با انتخاب حریصانهٔ نزدیک‌ترین نقطهٔ ورود — ابزار همیشه   */
+        /* از نزدیک‌ترین انتهای مسیرِ بعدی وارد می‌شود تا جابه‌جاییِ طولی حداقل شود  */
+        /* و بدون بازگشت به نقطه شروع، مسیرها به‌صورت مارپیچ طی شوند.               */
+        let curZ = NaN; // موقعیت طولی فعلی ابزار
+        let curR = 0; // شعاع فعلی ابزار
+        let nL = 0;
+        let lastR = NaN;
+        for (const c of cuts) {
+          if (c.r !== lastR) {
+            nL++;
+            note(`LAYER ${nL} - X${f2(2 * c.r)}`);
+            lastR = c.r;
+          }
+          /* نزدیک‌ترین نقطهٔ ورود به مکان فعلی ابزار — برای اولین برش، موقعیت      */
+          /* واقعی ابزار (cur.z) مرجع است؛ اگر عملیات قبلی (مثل گرد کردن گوشه‌ها)   */
+          /* ابزار را در انتهای خاصی رها کرده باشد، از همان‌جا ادامه می‌یابد و به   */
+          /* نقطهٔ خانه بازنمی‌گردد. در ابتدای برنامه cur همان نقطهٔ خانه است.      */
+          const refZ = Number.isNaN(curZ) ? cur.z : curZ;
+          const startZ = Math.abs(c.a - refZ) <= Math.abs(c.b - refZ) ? c.a : c.b;
+          const endZ = startZ === c.a ? c.b : c.a;
+
+          /* ایمنی اتصال مورب: اگر خط مستقیمِ بین انتهای مسیر قبل و ابتدای خط بعد   */
+          /* با خط آفست (و در نتیجه منحنی اصلی) تداخل داشته باشد، اتصال پیوسته      */
+          /* لغو و از مسیر امن G0 استفاده می‌شود تا شکل اصلی تراشیده نشود.          */
+          const rampOk = p.ramp && rampIsSafe(curZ, curR, startZ, c.r);
+          if (Number.isNaN(curZ)) {
+            /* اولین برش — جابه‌جایی امن از موقعیت فعلی (خانه یا پایان عملیات قبل) */
+            mv(0, retractX, startZ, 0, "rapid");
+          } else if (!rampOk) {
+            /* جابه‌جایی با حداقل جمع‌کردن: شعاع عبور باید بالای تمام موادِ مسیر باشد */
+            const safeR = minSafeRadius(curZ, startZ);
+            const travelR = Math.max(curR, safeR);
+            if (travelR > curR + 1e-6) rawRapid(2 * travelR, curZ); // جمع شعاعیِ جزئی (در صورت نیاز)
+            rawRapid(2 * travelR, startZ); // جابه‌جایی طولیِ امن — بدون بازگشت به شروع
+          }
+          /* در حالت اتصال پیوستهٔ امن (rampOk) هیچ G0 در میان نیست؛ حرکت برشیِ زیر */
+          /* مستقیماً و به‌صورت مورب (Ramp) ابزار را از انتهای مسیر قبل به ابتدای   */
+          /* خط بعد می‌رساند و سپس تراش طولی ادامه می‌یابد.                        */
+
+          /* فرورفتن تا شعاع لایه و تراش طولی */
+          mv(1, 2 * c.r, startZ, p.feedRough * 0.7, "rough");
+          if (Math.abs(endZ - startZ) > 0.01) mv(1, 2 * c.r, endZ, p.feedRough, "rough");
+          physCut(c.a, c.b, c.r); // به‌روزرسانی سطح تراش‌خورده
+
+          curZ = endZ;
+          curR = c.r;
+        }
+        if (!Number.isNaN(curZ)) mv(0, retractX, curZ, 0, "rapid"); // جمع‌کردن پایانی
+        break;
+      }
+      /* خشن محوری — فرورفتن شعاعی در گام‌های طولی (G72) */
+      case "rough-z": {
+        curOp = "rough-z";
+        note("ROUGHING - AXIAL PEEL");
+        const stepZ = Math.max(0.5, p.doc);
+        let nP = 0;
+        for (let z = z0; z <= zEnd + 1e-6; z += stepZ) {
+          const target = radiusAt(z) + OD;
+          if (target < R - 0.02) {
+            if (nP === 0) note(`AXIAL STEP ${f2(stepZ)} MM`);
+            nP++;
+            mv(0, retractX, z, 0, "rapid");
+            mv(1, 2 * target, z, p.feedRough * 0.8, "roughz");
+            mv(0, retractX, z, 0, "rapid");
+          }
+        }
+        break;
+      }
+      /* کپی‌تراشی — مسیرهای موازی با خط طرح */
+      case "copy": {
+        curOp = "copy";
+        note("ROUGHING - CONTOUR PARALLELS");
+        const kMax = Math.floor((R - floorR - 1e-6) / p.doc);
+        for (let k = kMax; k >= 1; k--) {
+          const d = OD + k * p.doc;
+          const ivs = cutIntervals(samples, R - d);
+          if (!ivs.length) continue;
+          note(`CONTOUR +${f2(d)} MM`);
+          for (const iv of ivs) {
+            const span = samples.filter((s) => s.z >= iv.a - 1e-6 && s.z <= iv.b + 1e-6);
+            if (span.length < 2) continue;
+            const stride = Math.max(1, Math.floor(span.length / 42));
+            const pts = span.filter((_, i) => i % stride === 0 || i === span.length - 1);
+            mv(0, retractX, pts[0].z, 0, "rapid");
+            mv(1, 2 * (pts[0].r + d), pts[0].z, p.feedRough * 0.7, "copy");
+            for (let i = 1; i < pts.length; i++) mv(1, 2 * (pts[i].r + d), pts[i].z, p.feedRough, "copy");
+            mv(0, retractX, pts[pts.length - 1].z, 0, "rapid");
+          }
+        }
+        break;
+      }
+      /* پرداخت نهایی روی خط اصلی طرح */
+      case "finish": {
+        curOp = "finish";
+        note("FINISHING - MAIN PROFILE");
+        /* نزدیک‌شدن در ارتفاع امن، سپس فرورفتن با فیدر (حرکت برشی امن) */
+        mv(0, retractX, z0, 0, "rapid");
+        profilePath("finish", p.feedFinish);
+        break;
+      }
+      /* آفست — خط موازی با طرح؛ مرجع مراحل خشن و نیمه‌پرداخت قبل از پرداخت */
+      case "offset": {
+        curOp = "offset";
+        if (OD > 0.01) {
+          note(`OFFSET PASS +${f2(OD)} MM (PARALLEL TO PROFILE)`);
+          /* نزدیک‌شدن در ارتفاع امن، سپس فرورفتن با فیدر (حرکت برشی امن) */
+          mv(0, retractX, z0, 0, "rapid");
+          mv(1, 2 * (r0 + OD), z0, p.feedFinish, "offset");
+          for (let i = 1; i < samples.length; i++) mv(1, 2 * (samples[i].r + OD), samples[i].z, p.feedFinish, "offset");
+          mv(0, retractX, zEnd, 0, "rapid");
+        }
+        break;
+      }
+    }
+  }
+
+  /* پایان */
+  curOp = "sys";
+  curOpId = -1;
+  note("END OF PROGRAM");
+  mv(0, retractX, p.blankL + 2 * p.safety, 0, "rapid");
+  mv(0, home.x, home.z, 0, "rapid");
+
+  /* قالب‌بندی خروجی بر اساس سبک انتخابی */
+  const lines = p.format === "modal" ? buildModalLines(segs, p) : buildStdLines(segs, p);
+
+  /* آمار */
+  let cutLen = 0;
+  let rapidLen = 0;
+  let timeSec = 0;
+  for (const s of segs) {
+    const d = Math.hypot(s.x2 - s.x1, s.z2 - s.z1);
+    if (s.motion === 1) {
+      cutLen += d;
+      timeSec += (d / Math.max(1, s.feed)) * 60;
+    } else {
+      rapidLen += d;
+      timeSec += (d / RAPID_RATE) * 60;
+    }
+  }
+  let vol = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const dz = samples[i].z - samples[i - 1].z;
+    const rAvg = (samples[i].r + samples[i - 1].r) / 2;
+    vol += Math.PI * (R * R - rAvg * rAvg) * dz;
+  }
+  /* حجم گوشه‌های برداشته‌شده برای مقاطع غیر دایره‌ای (بین شعاع محیطی و محاطی) */
+  const envVol = rotationalEnvelope(p.blankD, p.blankShape);
+  if (envVol.hasCorners && envVol.outR > R) {
+    vol += Math.PI * (envVol.outR * envVol.outR - R * R) * p.blankL;
+  }
+
+  return {
+    lines,
+    segs,
+    samples,
+    cutLen,
+    rapidLen,
+    timeSec,
+    volumeCm3: vol / 1000,
+    roughLayers: p.ops.filter((o) => o.on && (o.type === "rough-d" || o.type === "rough-z" || o.type === "offset")).length,
+    format: p.format,
+  };
+}
+
+/* فیدر بهینه: وقتی simpleFeed روشن است، فیدر هر حرکت به یکی از دو فیدر اصلی  */
+/* (خشن برای عملیات‌های برداشت، پرداخت برای پرداخت و آفست) ساده می‌شود تا در  */
+/* جی‌کد فقط دو F باقی بماند و G1/F های تکراری حذف شوند.                     */
+const FINISH_KINDS: SegKind[] = ["finish", "offset"];
+function normFeed(sg: Seg, p: Params): number {
+  if (!p.simpleFeed) return sg.feed;
+  return FINISH_KINDS.includes(sg.kind) ? p.feedFinish : p.feedRough;
+}
+
+/* ---------------- پس‌پردازندهٔ استاندارد Fanuc ---------------- */
+
+function buildStdLines(segs: Seg[], p: Params): string[] {
+  const lines: string[] = [];
+  let nWord = 0;
+  const emit = (code: string) => {
+    lines.push(p.lineNumbers ? `N${(nWord += 10)} ${code}` : code);
+    return lines.length - 1;
+  };
+  lines.push("%");
+  lines.push("O1001 (KHARRATKOD - 2 AXIS WOOD LATHE)");
+  lines.push(`(STOCK D${p.blankD} x L${p.blankL} MM)`);
+  lines.push(`(TOOL: ${toolDesc(p.tool)})`);
+  lines.push(`(DOC ${p.doc} MM - OFFSET ${p.offsetDist} MM)`);
+  emit("G21 G18 G40");
+  let lastFeed = -1;
+  for (let i = 0; i < segs.length; i++) {
+    const sg = segs[i];
+    if (sg.note) for (const c of sg.note) lines.push(`(${c})`);
+    if (sg.motion === 0) {
+      sg.line = emit(`G0 X${f2(sg.x2)} Z${f2(sg.z2)}`);
+    } else {
+      const F = Math.max(1, Math.round(normFeed(sg, p)));
+      /* در حالت فیدر بهینه، F فقط هنگام تغییر تکرار می‌شود وگرنه حذف می‌شود */
+      const fWord = !p.simpleFeed || F !== lastFeed ? ` F${F}` : "";
+      lastFeed = F;
+      sg.line = emit(`G1 X${f2(sg.x2)} Z${f2(sg.z2)}${fWord}`);
+    }
+    if (i === 0) {
+      emit(`M3 S${Math.round(p.rpm)}`);
+      emit("G4 P2");
+    }
+  }
+  emit("M5");
+  emit("M30");
+  lines.push("%");
+  return lines;
+}
+
+/* ------------- پس‌پردازندهٔ فشرده Modal (سبک نمونهٔ کاربر) ------------- */
+/* G90/G49 ، مختصات سه‌دهک، حذف G مودال در خطوط ادامه، تغییر فیدر در خط     */
+/* جدا، پایان با M05/M02 — دستگاه مختصات XY (صفحه G17):                    */
+/* X = طول قطعه (افقی) ، Y = قطر (عمودی) → نمای XY در CIMCO دقیقاً مطابق  */
+/* پیش‌نمایش نرم‌افزار: قطعه افقی، پروفایل بالای محور طول                   */
+
+function buildModalLines(segs: Seg[], p: Params): string[] {
+  const lines: string[] = ["%", "G90", "G49", `M3 S${Math.round(p.rpm)}`];
+  const f3 = (v: number) => v.toFixed(3);
+  let mode: -1 | 0 | 1 = -1;
+  let mFeed = -1;
+  let lastOp: OpType | "sys" = "sys";
+  for (const sg of segs) {
+    const words: string[] = [];
+    if (Math.abs(sg.z2 - sg.z1) > 1e-9) words.push(`X${f3(sg.z2)}`);
+    if (Math.abs(sg.x2 - sg.x1) > 1e-9) words.push(`Y${f3(sg.x2)}`);
+    if (sg.op !== lastOp) lines.push("");
+    lastOp = sg.op;
+    if (words.length === 0) {
+      sg.line = lines.length - 1;
+      continue;
+    }
+    if (sg.motion === 0) {
+      lines.push(`G0 ${words.join(" ")}`);
+      mode = 0;
+    } else {
+      const F = Math.max(1, Math.round(normFeed(sg, p)));
+      const fChanged = F !== mFeed;
+      /* فیدر مودال است؛ فقط هنگام تغییر مقدار صادر می‌شود و به خط حرکت می‌چسبد — */
+      /* در نتیجه G1/F های تکراری حذف و فقط دو F اصلی باقی می‌ماند.             */
+      const gPrefix = mode !== 1 ? "G1 " : "";
+      const fSuffix = fChanged ? ` F${F}` : "";
+      lines.push(`${gPrefix}${words.join(" ")}${fSuffix}`);
+      if (fChanged) mFeed = F;
+      mode = 1;
+    }
+    sg.line = lines.length - 1;
+  }
+  lines.push("", "M05", "M02", "%");
+  return lines;
+}
+
+/* ---------------- پیش‌تنظیم‌ها ---------------- */
+
+export interface Preset {
+  id: string;
+  name: string;
+  blankD: number;
+  blankL: number;
+  pts: [number, number, boolean][]; // z, r, smooth
+}
+
+export const PRESETS: Preset[] = [
+  {
+    id: "leg",
+    name: "پایه مبل",
+    blankD: 60,
+    blankL: 200,
+    pts: [
+      [0, 22, false], [10, 22, false], [16, 29, true], [30, 29, true],
+      [42, 17, true], [54, 17, true], [62, 27, true], [76, 27, true],
+      [86, 13, true], [98, 13, true], [106, 24, true], [122, 24, true],
+      [132, 15, true], [146, 15, true], [154, 27, true], [172, 27, true],
+      [180, 19, true], [192, 19, true], [200, 22, false],
+    ],
+  },
+  {
+    id: "vase",
+    name: "گلدان",
+    blankD: 64,
+    blankL: 200,
+    pts: [
+      [0, 9, true], [8, 14, true], [20, 24, true], [36, 30, true],
+      [54, 27, true], [76, 15, true], [96, 10, true], [114, 11, true],
+      [132, 19, true], [150, 26, true], [164, 24, true], [176, 15, true],
+      [186, 9, true], [194, 7, true], [200, 8, false],
+    ],
+  },
+  {
+    id: "bowl",
+    name: "پیاله",
+    blankD: 150,
+    blankL: 90,
+    pts: [
+      [0, 10, true], [12, 22, true], [30, 42, true], [52, 58, true],
+      [70, 67, true], [82, 71, true], [90, 72, false],
+    ],
+  },
+  {
+    id: "baluster",
+    name: "ستون نرده",
+    blankD: 70,
+    blankL: 240,
+    pts: [
+      [0, 18, false], [8, 24, true], [18, 24, true], [26, 32, true],
+      [40, 32, true], [50, 20, true], [62, 14, true], [76, 14, true],
+      [86, 26, true], [100, 33, true], [116, 33, true], [126, 22, true],
+      [138, 15, true], [152, 15, true], [162, 28, true], [178, 34, true],
+      [194, 34, true], [204, 21, true], [216, 15, true], [228, 15, true],
+      [234, 20, true], [240, 18, false],
+    ],
+  },
+  {
+    id: "bead",
+    name: "مهره تسبیح",
+    blankD: 40,
+    blankL: 60,
+    pts: [
+      [0, 5, true], [8, 11, true], [18, 17, true], [30, 19, true],
+      [42, 17, true], [52, 11, true], [60, 5, true],
+    ],
+  },
+  {
+    id: "cyl",
+    name: "استوانه خام",
+    blankD: 60,
+    blankL: 180,
+    pts: [
+      [0, 30, false], [180, 30, false],
+    ],
+  },
+];
+
+let uid = 1000;
+export const nextId = () => ++uid;
+
+export function presetPoints(p: Preset): PPoint[] {
+  return p.pts.map(([z, r, smooth]) => ({ id: nextId(), z, r, smooth }));
+}
+
+/* مسیر SVG برای بندانگشتی پیش‌تنظیم‌ها */
+export function thumbPath(p: Preset, w: number, h: number): string {
+  const R = p.blankD / 2;
+  const sx = (z: number) => 3 + (z / p.blankL) * (w - 6);
+  const sy = (r: number) => h / 2 - (r / R) * (h / 2 - 3);
+  const pts = p.pts;
+  let d = `M ${sx(pts[0][0]).toFixed(1)} ${sy(pts[0][1]).toFixed(1)}`;
+  for (let i = 1; i < pts.length; i++) d += ` L ${sx(pts[i][0]).toFixed(1)} ${sy(pts[i][1]).toFixed(1)}`;
+  for (let i = pts.length - 1; i >= 0; i--) d += ` L ${sx(pts[i][0]).toFixed(1)} ${(h - sy(pts[i][1])).toFixed(1)}`;
+  return d + " Z";
+}
+
+export function fmtTime(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  if (m >= 60) return `${Math.floor(m / 60)}س ${m % 60}د`;
+  return m > 0 ? `${m}د و ${s}ث` : `${s} ثانیه`;
+}
