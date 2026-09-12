@@ -5,10 +5,10 @@ import ProfileEditor, { type EdSettings } from "./components/ProfileEditor";
 import SimulationView from "./components/SimulationView";
 import { IconCheck, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
 import { buildDxf } from "./lib/dxf";
-import { PRESETS, generate, normalizeParams, presetPoints } from "./lib/lathe";
+import { PRESETS, STRATEGIES, generate, makeOps, normalizeParams, presetPoints } from "./lib/lathe";
 import type { Params, PPoint, Preset } from "./lib/lathe";
 import type { SketchSeg } from "./lib/sketch";
-import { flattenSketch, normalizeSketch, sketchFromPoints } from "./lib/sketch";
+import { autoSplitPoint, branchPoints, chainPolyline, flattenSketch, normalizeSketch, orderChain, sketchFromPoints, sketchFromWall, splitChainAt } from "./lib/sketch";
 import { cn } from "./utils/cn";
 
 const STORE_KEY = "kharraatcode-v1";
@@ -22,7 +22,7 @@ interface Saved {
   version?: number;
 }
 
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 
 let SAVED: Saved | null = null;
 try {
@@ -33,7 +33,7 @@ try {
 }
 
 /* داده‌های پیش از نسخه ۲: عملیات «spring» و «offset» معنای متفاوتی داشتند */
-const IS_LEGACY = !SAVED || !SAVED.version || SAVED.version < SAVE_VERSION;
+const IS_LEGACY = !SAVED || !SAVED.version || SAVED.version < 3;
 
 export default function App() {
   const [sketch, setSketch] = useState<SketchSeg[]>(() => {
@@ -51,6 +51,7 @@ export default function App() {
       showRough: s?.showRough ?? true,
       showFinish: s?.showFinish ?? true,
       showOffset: s?.showOffset ?? true,
+      showBore: s?.showBore ?? true,
       showRound: s?.showRound ?? true,
       showFace: s?.showFace ?? true,
       showRapids: s?.showRapids ?? true,
@@ -69,13 +70,25 @@ export default function App() {
   const future = useRef<SketchSeg[][]>([]);
   const toastTimer = useRef<number | null>(null);
 
-  /* پروفایل نقطه‌ای برای موتور تراش — از اسکچ تخت می‌شود */
-  const points = useMemo<PPoint[]>(
-    () => flattenSketch(sketch, params.blankD / 2, params.blankL),
-    [sketch, params.blankD, params.blankL]
-  );
+  /* پروفایل نقطه‌ای برای موتور تراش — حالت عادی تخت، حالت کاسه دوشاخه (Split) */
+  const { points, innerPoints, splitInfo } = useMemo(() => {
+    const blankR = params.blankD / 2;
+    if (params.split.enabled) {
+      const poly = chainPolyline(orderChain(sketch));
+      if (poly.length >= 3) {
+        const sp = splitChainAt(poly, { z: params.split.z, r: params.split.r });
+        return {
+          points: branchPoints(sp.outer, blankR, params.blankL, "max"),
+          innerPoints: branchPoints(sp.inner, blankR, params.blankL, "min"),
+          splitInfo: { outerDir: sp.outerDir, innerDir: sp.innerDir, at: sp.splitAt },
+        };
+      }
+    }
+    const none: { outerDir: 1 | -1; innerDir: 1 | -1; at: { z: number; r: number } } | null = null;
+    return { points: flattenSketch(sketch, blankR, params.blankL), innerPoints: [] as PPoint[], splitInfo: none };
+  }, [sketch, params.split, params.blankD, params.blankL]);
 
-  const gen = useMemo(() => generate(points, params), [points, params]);
+  const gen = useMemo(() => generate(points, params, innerPoints), [points, params, innerPoints]);
 
   /* ذخیره محلی */
   useEffect(() => {
@@ -134,11 +147,46 @@ export default function App() {
   };
 
   const applyPreset = (p: Preset) => {
-    onSketchChange(sketchFromPoints(presetPoints(p)), true);
-    setParams((prev) => ({ ...prev, blankD: p.blankD, blankL: p.blankL }));
+    if (p.wall) {
+      /* کاسه: دیواره به ترتیب مسیر (خارج ← لبه ← داخل) ساخته می‌شود */
+      onSketchChange(
+        sketchFromWall(p.wall.map(([z, r, smooth]) => ({ z, r, smooth }))),
+        true
+      );
+    } else {
+      onSketchChange(sketchFromPoints(presetPoints(p)), true);
+    }
+    setParams((prev) => {
+      const next: Params = { ...prev, blankD: p.blankD, blankL: p.blankL };
+      if (p.shape) next.blankShape = p.shape;
+      next.split = p.split
+        ? { enabled: true, z: p.split.z, r: p.split.r }
+        : { ...prev.split, enabled: false };
+      if (p.strategy) {
+        const st = STRATEGIES.find((s) => s.id === p.strategy);
+        if (st) next.ops = makeOps(st.types);
+      }
+      return next;
+    });
     setActivePreset(p.id);
     setSelectedIds([]);
-    showToast(`پیش‌تنظیم «${p.name}» اعمال شد`);
+    showToast(
+      p.strategy === "bowl"
+        ? `پیش‌تنظیم «${p.name}» + استراتژی داخل/خارج فعال شد`
+        : `پیش‌تنظیم «${p.name}» اعمال شد`
+    );
+  };
+
+  /* قرار دادن خودکار نقطه Split روی لبه (بیشترین X زنجیره) */
+  const autoSplit = () => {
+    const poly = chainPolyline(orderChain(sketch));
+    const auto = autoSplitPoint(poly);
+    if (auto) {
+      setParams((prev) => ({ ...prev, split: { ...prev.split, enabled: true, z: auto.z, r: auto.r } }));
+      showToast(`نقطه Split روی لبه قرار گرفت (X ${auto.z} • ⌀ ${(auto.r * 2).toFixed(1)})`);
+    } else {
+      showToast("زنجیره پروفیل برای Split خودکار کافی نیست", "warn");
+    }
   };
 
   const copyGCode = async () => {
@@ -226,6 +274,9 @@ export default function App() {
             params={params}
             onParams={(patch) => setParams((p) => ({ ...p, ...patch }))}
             points={points}
+            innerPoints={innerPoints}
+            splitInfo={splitInfo}
+            onAutoSplit={autoSplit}
             activePreset={activePreset}
             onApplyPreset={applyPreset}
             onStrategy={(name) => showToast(`استراتژی «${name}» فعال شد`)}
@@ -244,6 +295,8 @@ export default function App() {
               onSelected={setSelectedIds}
               params={params}
               gen={gen}
+              split={params.split}
+              onSplit={(s) => setParams((p) => ({ ...p, split: s }))}
               settings={settings}
               onSettings={(patch) => setSettings((s) => ({ ...s, ...patch }))}
               ops={params.ops}
@@ -260,7 +313,17 @@ export default function App() {
         </main>
 
         <aside className="order-3 h-[420px] w-full shrink-0 lg:h-auto lg:w-[330px]">
-          <GCodePanel gen={gen} activeLine={activeLine} onCopy={copyGCode} onDownload={downloadGCode} />
+          <GCodePanel
+            gen={gen}
+            activeLine={activeLine}
+            onCopy={copyGCode}
+            onDownload={downloadGCode}
+            badge={
+              params.split.enabled
+                ? `کاسه • Split (X ${params.split.z} / ⌀ ${(params.split.r * 2).toFixed(1)}) • H2 (X ${params.holder2.xOff} / Y ${params.holder2.yOff})`
+                : undefined
+            }
+          />
         </aside>
       </div>
 

@@ -349,6 +349,197 @@ export function sketchFromPoints(pts: { z: number; r: number; smooth: boolean }[
   return out;
 }
 
+/* ---------------- زنجیره‌سازی پروفیل و نقطه Split (کاسه) ---------------- */
+
+export interface ChainItem {
+  seg: SketchSeg;
+  reversed: boolean;
+}
+
+const endKey = (p: SPoint) => `${Math.round(p.z * 1000)},${Math.round(p.r * 1000)}`;
+
+/**
+ * مرتب‌سازی المان‌ها به ترتیب مسیر (زنجیره): از یک انتهای آزاد شروع می‌کند و
+ * المان‌های متصل را به‌ترتیب به هم می‌چسباند. اگر چند زنجیره جدا وجود داشته
+ * باشد، پشت سر هم برمی‌گرداند.
+ */
+export function orderChain(segs: SketchSeg[]): ChainItem[] {
+  if (segs.length === 0) return [];
+  if (segs.length === 1) return [{ seg: segs[0], reversed: false }];
+  const unused = new Map<number, SketchSeg>(segs.map((s) => [s.id, s]));
+  const out: ChainItem[] = [];
+  const chainEnd = (it: ChainItem): SPoint => (it.reversed ? it.seg.a : it.seg.b);
+
+  /* شمارش اتصال هر نقطه انتهایی برای یافتن انتهای آزاد زنجیره */
+  const count = new Map<string, number>();
+  for (const s of segs) {
+    for (const k of [endKey(s.a), endKey(s.b)]) count.set(k, (count.get(k) ?? 0) + 1);
+  }
+
+  while (unused.size) {
+    /* شروع زنجیره بعدی: ترجیحاً المانی با انتهای آزاد */
+    let first: SketchSeg | undefined;
+    for (const s of unused.values()) {
+      if ((count.get(endKey(s.a)) ?? 0) <= 1 || (count.get(endKey(s.b)) ?? 0) <= 1) {
+        first = s;
+        break;
+      }
+    }
+    if (!first) first = unused.values().next().value as SketchSeg;
+    unused.delete(first.id);
+    /* جهت شروع: انتهای آزاد در ابتدای زنجیره قرار گیرد */
+    const aFree = (count.get(endKey(first.a)) ?? 0) <= 1;
+    const bFree = (count.get(endKey(first.b)) ?? 0) <= 1;
+    const chain: ChainItem[] = [{ seg: first, reversed: !aFree && bFree }];
+    /* گسترش از انتها */
+    for (;;) {
+      const tip = endKey(chainEnd(chain[chain.length - 1]));
+      let next: SketchSeg | undefined;
+      let rev = false;
+      for (const s of unused.values()) {
+        if (endKey(s.a) === tip) {
+          next = s;
+          rev = false;
+          break;
+        }
+        if (endKey(s.b) === tip) {
+          next = s;
+          rev = true;
+          break;
+        }
+      }
+      if (!next) break;
+      unused.delete(next.id);
+      chain.push({ seg: next, reversed: rev });
+      if (chain.length > segs.length + 2) break;
+    }
+    out.push(...chain);
+  }
+  return out;
+}
+
+/** نمونه‌برداری زنجیره به چندضلعی پیوسته (به ترتیب مسیر) */
+export function chainPolyline(chain: ChainItem[]): SPoint[] {
+  const out: SPoint[] = [];
+  for (const it of chain) {
+    const pts = it.seg.kind === "line" ? [it.seg.a, it.seg.b] : segPoints(it.seg);
+    const arr = it.reversed ? [...pts].reverse() : pts;
+    for (const p of arr) {
+      if (!out.length || dist(out[out.length - 1], p) > 1e-6) out.push({ z: p.z, r: p.r });
+    }
+  }
+  return out;
+}
+
+export interface SplitResult {
+  outer: SPoint[]; // شاخه خارج کاسه (قبل از نقطه Split در مسیر)
+  inner: SPoint[]; // شاخه داخل کاسه (بعد از نقطه Split در مسیر)
+  splitIndex: number; // اندیس رأس Split در چندضلعی زنجیره
+  splitAt: SPoint; // نزدیک‌ترین نقطه زنجیره به نقطه Split
+  outerDir: 1 | -1; // جهت حرکت طولی شاخه خارجی (+۱ پیشرو / ‎−۱‎ برگشت)
+  innerDir: 1 | -1; // جهت حرکت طولی شاخه داخلی
+}
+
+/**
+ * تقسیم زنجیره در نزدیک‌ترین نقطهٔ مسیر به Split + تشخیص جهت هر شاخه.
+ * نزدیک‌ترین نقطه روی خودِ پاره‌خط‌ها (پرتو) پیدا می‌شود — نه فقط رأس‌ها —
+ * تا مثلاً نقطهٔ وسط لبه دقیقاً روی ضخامت لبه بیفتد و شاخه داخلی تمیز جدا شود.
+ * جهت هر شاخه از روی اختلاف Z ابتدا و انتهای آن تعیین می‌شود.
+ */
+export function splitChainAt(poly: SPoint[], split: SPoint): SplitResult {
+  let bi = 0;
+  let bd = Infinity;
+  let proj: SPoint = { ...poly[0] };
+  for (let i = 0; i < poly.length - 1; i++) {
+    const a = poly[i];
+    const b = poly[i + 1];
+    const dz = b.z - a.z;
+    const dr = b.r - a.r;
+    const L2 = dz * dz + dr * dr;
+    let t = L2 > 1e-12 ? ((split.z - a.z) * dz + (split.r - a.r) * dr) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const px = a.z + t * dz;
+    const pr = a.r + t * dr;
+    const d = Math.hypot(split.z - px, split.r - pr);
+    if (d < bd) {
+      bd = d;
+      bi = i;
+      proj = { z: px, r: pr };
+    }
+  }
+  const outer = [...poly.slice(0, bi + 1), { ...proj }];
+  const inner = [{ ...proj }, ...poly.slice(bi + 1)];
+  const dir = (arr: SPoint[]): 1 | -1 => (arr.length < 2 || arr[arr.length - 1].z >= arr[0].z ? 1 : -1);
+  return { outer, inner, splitIndex: bi, splitAt: proj, outerDir: dir(outer), innerDir: dir(inner) };
+}
+
+/** نقطه Split خودکار: وسط لبه (بیشترین Z زنجیره) */
+export function autoSplitPoint(poly: SPoint[]): SPoint | null {
+  if (poly.length < 3) return null;
+  let maxZ = -Infinity;
+  for (const p of poly) if (p.z > maxZ) maxZ = p.z;
+  const cands = poly.filter((p) => Math.abs(p.z - maxZ) < 0.6);
+  if (!cands.length) return null;
+  const avgR = cands.reduce((s, p) => s + p.r, 0) / cands.length;
+  return { z: Math.round(maxZ * 10) / 10, r: Math.round(avgR * 10) / 10 };
+}
+
+/**
+ * ساخت اسکچ از دیواره کاسه: مانند sketchFromPoints ولی **بدون مرتب‌سازی** —
+ * ترتیب مسیر (خارج ← لبه ← داخل) حفظ می‌شود.
+ */
+export function sketchFromWall(wall: { z: number; r: number; smooth: boolean }[]): SketchSeg[] {
+  const p = wall;
+  const out: SketchSeg[] = [];
+  for (let i = 0; i < p.length - 1; i++) {
+    const p0 = p[Math.max(0, i - 1)];
+    const p1 = p[i];
+    const p2 = p[i + 1];
+    const p3 = p[Math.min(p.length - 1, i + 2)];
+    if (p1.smooth && p2.smooth) {
+      out.push({
+        id: newSegId(),
+        kind: "cubic",
+        a: { z: p1.z, r: p1.r },
+        b: { z: p2.z, r: p2.r },
+        c1: { z: p1.z + (p2.z - p0.z) / 6, r: p1.r + (p2.r - p0.r) / 6 },
+        c2: { z: p2.z - (p3.z - p1.z) / 6, r: p2.r - (p3.r - p1.r) / 6 },
+      });
+    } else {
+      out.push({ id: newSegId(), kind: "line", a: { z: p1.z, r: p1.r }, b: { z: p2.z, r: p2.r } });
+    }
+  }
+  return out;
+}
+
+let branchUid = 95000;
+
+/**
+ * تبدیل یک شاخه زنجیره به نقاط پروفیل موتور تراش.
+ * keep = "max" برای شاخه خارجی (پوشش بیرونی) و "min" برای شاخه داخلی
+ * (مرز حفره — در Zهای مشترک مثل لبه، شعاع کوچک‌تر مرز داخلی است).
+ */
+export function branchPoints(branch: SPoint[], blankR: number, blankL: number, keep: "max" | "min"): PPoint[] {
+  const raw: SPoint[] = [];
+  for (const p of branch) {
+    if (!Number.isFinite(p.z) || !Number.isFinite(p.r)) continue;
+    raw.push({ z: Math.min(blankL, Math.max(0, p.z)), r: Math.min(blankR, Math.max(0.2, p.r)) });
+  }
+  if (raw.length < 2) return [];
+  raw.sort((x, y) => x.z - y.z);
+  const merged: SPoint[] = [];
+  for (const p of raw) {
+    const last = merged[merged.length - 1];
+    if (last && Math.abs(last.z - p.z) < 0.06) {
+      if (keep === "max" ? p.r > last.r : p.r < last.r) last.r = p.r;
+    } else {
+      merged.push({ ...p });
+    }
+  }
+  if (merged.length < 2) return [];
+  return merged.map((p) => ({ id: ++branchUid, z: p.z, r: p.r, smooth: false }));
+}
+
 /** اعتبارسنجی داده‌های ذخیره‌شده */
 export function normalizeSketch(raw: unknown): SketchSeg[] | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;

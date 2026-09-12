@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GenResult, Op, Params, SegKind } from "../lib/lathe";
+import type { GenResult, Op, Params, SegKind, SplitState } from "../lib/lathe";
 import { OP_INFO } from "../lib/lathe";
 import type { SketchKind, SketchSeg, SnapPoint, SPoint } from "../lib/sketch";
 import {
   arcRadius,
   arcWithRadius,
+  chainPolyline,
   cloneSeg,
   defaultCubicHandles,
   dist,
@@ -16,10 +17,13 @@ import {
   makeSeg,
   moveSeg,
   newSegId,
+  orderChain,
   segLength,
+  segMid,
   segPoints,
   SNAP_FA,
   snapCandidates,
+  splitChainAt,
 } from "../lib/sketch";
 import { cn } from "../utils/cn";
 import {
@@ -38,6 +42,7 @@ import {
   IconPlus,
   IconQuad,
   IconRedo,
+  IconSplit,
   IconTrash,
   IconUndo,
   IconX,
@@ -49,13 +54,14 @@ export interface EdSettings {
   showRough: boolean;
   showFinish: boolean;
   showOffset: boolean;
+  showBore: boolean;
   showRound: boolean;
   showFace: boolean;
   showRapids: boolean;
   showGhost: boolean;
 }
 
-type Tool = "select" | "line" | "quad" | "cubic" | "arc";
+type Tool = "select" | "line" | "quad" | "cubic" | "arc" | "split";
 
 const TOOLS: { id: Tool; name: string; key: string; icon: React.ReactNode; hint: string }[] = [
   { id: "select", name: "انتخاب", key: "V", icon: <IconCursor className="h-4 w-4" />, hint: "کلیک تکی، باکس انتخابگر چپ‌به‌راست (فقط داخل) و راست‌به‌چپ (متقاطع)، Shift افزودن، Ctrl حذف، دابل‌کلیک زنجیره" },
@@ -63,9 +69,10 @@ const TOOLS: { id: Tool; name: string; key: string; icon: React.ReactNode; hint:
   { id: "quad", name: "منحنی", key: "C", icon: <IconQuad className="h-4 w-4" />, hint: "منحنی ساده: شروع، پایان، یک نقطهٔ کنترل" },
   { id: "cubic", name: "منحنی کنترلی", key: "B", icon: <IconCubic className="h-4 w-4" />, hint: "منحنی پیشرفته: شروع، پایان، سپس دستهٔ خروج از پایان و دستهٔ ورود به شروع" },
   { id: "arc", name: "کمان", key: "A", icon: <IconArc3 className="h-4 w-4" />, hint: "کمان سه‌نقطه‌ای: شروع، پایان، نقطه‌ای روی کمان" },
+  { id: "split", name: "نقطه Split", key: "S", icon: <IconSplit className="h-4 w-4" />, hint: "قرار دادن نقطه تعیین‌کننده داخل/خارج روی پروفیل" },
 ];
 
-const NEED_PTS: Record<Tool, number> = { select: 0, line: 2, quad: 3, cubic: 4, arc: 3 };
+const NEED_PTS: Record<Tool, number> = { select: 0, line: 2, quad: 3, cubic: 4, arc: 3, split: 1 };
 
 const STEP_HINT: Record<Tool, string[]> = {
   select: [],
@@ -73,6 +80,7 @@ const STEP_HINT: Record<Tool, string[]> = {
   quad: ["نقطهٔ شروع", "نقطهٔ پایان", "نقطهٔ کنترل منحنی"],
   cubic: ["نقطهٔ شروع", "نقطهٔ پایان", "دستهٔ خروج از پایان", "دستهٔ ورود به شروع"],
   arc: ["نقطهٔ شروع کمان", "نقطهٔ پایان کمان", "نقطه‌ای روی کمان"],
+  split: ["کلیک روی پروفیل برای قرار دادن نقطه Split"],
 };
 
 interface Props {
@@ -82,6 +90,8 @@ interface Props {
   onSelected: (ids: number[]) => void;
   params: Params;
   gen: GenResult;
+  split: SplitState;
+  onSplit: (s: SplitState) => void;
   settings: EdSettings;
   onSettings: (patch: Partial<EdSettings>) => void;
   ops: Op[];
@@ -108,13 +118,16 @@ const SEG_COLOR: Record<SegKind, string> = {
   face: "#e3a94e",
   finish: "#e0703c",
   offset: "#f59a80",
+  bore: "#4cc9f0",
+  borefin: "#f72585",
 };
 
-type LayerKey = "showRough" | "showFinish" | "showOffset" | "showRound" | "showFace" | "showRapids" | "showGhost";
+type LayerKey = "showRough" | "showFinish" | "showOffset" | "showBore" | "showRound" | "showFace" | "showRapids" | "showGhost";
 
 const CHIPS: { key: LayerKey; label: string; color: string }[] = [
   { key: "showRound", label: "گرد کردن", color: "#b48ee0" },
   { key: "showRough", label: "مسیر خشن", color: "#45b394" },
+  { key: "showBore", label: "داخل‌تراشی", color: "#4cc9f0" },
   { key: "showOffset", label: "آفست", color: "#f59a80" },
   { key: "showFinish", label: "پرداخت", color: "#e0703c" },
   { key: "showFace", label: "پیشانی", color: "#e3a94e" },
@@ -131,6 +144,8 @@ const KIND_VISIBLE: Record<SegKind, LayerKey> = {
   face: "showFace",
   finish: "showFinish",
   offset: "showOffset",
+  bore: "showBore",
+  borefin: "showBore",
 };
 
 const SNAP_STEPS = [1, 0.5, 5, 0];
@@ -151,6 +166,8 @@ export default function ProfileEditor({
   onSelected,
   params,
   gen,
+  split,
+  onSplit,
   settings,
   onSettings,
   ops,
@@ -422,6 +439,46 @@ export default function ProfileEditor({
     }
     return best;
   };
+
+  /* نزدیک‌ترین نقطه روی پروفیل (برای ابزار Split) */
+  const nearestOnSketch = (w: SPoint): SPoint | null => {
+    let best: SPoint | null = null;
+    let bestD = Infinity;
+    for (const s of segs) {
+      const pts = s.kind === "line" ? [s.a, s.b] : segPoints(s, 40);
+      for (const p of pts) {
+        const d = dist(p, w);
+        if (d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+    }
+    return best ? clampPt({ ...best }) : null;
+  };
+
+  /* سمت هر المان نسبت به نقطه Split (خارج/داخل) — برای رنگ‌آمیزی شاخه‌ها */
+  const segSide = useMemo(() => {
+    const m = new Map<number, "outer" | "inner">();
+    if (!split.enabled || segs.length === 0) return m;
+    const poly = chainPolyline(orderChain(segs));
+    if (poly.length < 3) return m;
+    const sp = splitChainAt(poly, { z: split.z, r: split.r });
+    for (const s of segs) {
+      const mid = segMid(s);
+      let bi = 0;
+      let bd = Infinity;
+      poly.forEach((p, i) => {
+        const d = dist(p, mid);
+        if (d < bd) {
+          bd = d;
+          bi = i;
+        }
+      });
+      m.set(s.id, bi <= sp.splitIndex ? "outer" : "inner");
+    }
+    return m;
+  }, [segs, split]);
 
   type HandleRef = { segId: number; part: "a" | "b" | "c1" | "c2" | "via" };
   const hitHandle = (w: SPoint): HandleRef | null => {
@@ -840,6 +897,10 @@ export default function ProfileEditor({
         const s = onHandle ? null : hitSeg(raw);
         setHoverId(s ? s.id : null);
         setSnapHit(null);
+      } else if (tool === "split") {
+        /* ابزار Split مغناطیسی به پروفیل می‌چسبد */
+        setCursor(nearestOnSketch(raw));
+        setSnapHit(null);
       } else {
         const { p, hit } = applySnap(raw);
         setCursor(clampPt(p));
@@ -889,6 +950,9 @@ export default function ProfileEditor({
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 4) {
         d.moved = true;
         setCam({ s: d.cam0.s, ox: d.cam0.ox + (e.clientX - d.sx), oy: d.cam0.oy + (e.clientY - d.sy) });
+      } else if (tool === "split") {
+        setCursor(nearestOnSketch(raw));
+        setSnapHit(null);
       } else {
         const { p, hit } = applySnap(raw);
         setCursor(clampPt(p));
@@ -1082,6 +1146,12 @@ export default function ProfileEditor({
     }
 
     if (tool !== "select" && (!d || ((d.mode === "draw" || d.mode === "pan") && !d.moved))) {
+      /* ابزار Split: قرار دادن نقطه تعیین‌کننده روی پروفیل */
+      if (tool === "split") {
+        const hit = nearestOnSketch(toWorld(e.clientX, e.clientY));
+        if (hit) onSplit({ enabled: true, z: Math.round(hit.z * 10) / 10, r: Math.round(hit.r * 10) / 10 });
+        return;
+      }
       /* افزودن نقطهٔ جدید به ترسیم در حال انجام */
       const { p } = applySnap(toWorld(e.clientX, e.clientY));
       const pt = clampPt(p);
@@ -1161,10 +1231,11 @@ export default function ProfileEditor({
 
   /* ---------- مسیر ابزار ---------- */
   const runs = useMemo(() => {
-    if (!cam) return [] as { kind: SegKind; opId: number; d: string; arrows: string }[];
-    const out: { kind: SegKind; opId: number; d: string; arrows: string }[] = [];
+    if (!cam) return [] as { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[];
+    const out: { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[] = [];
     let curKind: SegKind | null = null;
     let curOpId = -2;
+    let curHolder: 1 | 2 = 1;
     let pts: [number, number][] = [];
     const flush = () => {
       if (curKind && pts.length > 1) {
@@ -1183,17 +1254,18 @@ export default function ProfileEditor({
             arrows += `M ${(x2 + ux * 2).toFixed(1)} ${(y2 + uy * 2).toFixed(1)} L ${(x2 - ux * 6.5 - uy * 4).toFixed(1)} ${(y2 - uy * 6.5 + ux * 4).toFixed(1)} L ${(x2 - ux * 6.5 + uy * 4).toFixed(1)} ${(y2 - uy * 6.5 - ux * 4).toFixed(1)} Z `;
           }
         }
-        out.push({ kind: curKind, opId: curOpId, d, arrows });
+        out.push({ kind: curKind, opId: curOpId, holder: curHolder, d, arrows, sx: pts[0][0], sy: pts[0][1] });
       }
       curKind = null;
       pts = [];
     };
     for (const sg of gen.segs) {
       const kind: SegKind = sg.motion === 0 ? "rapid" : sg.kind;
-      if (kind !== curKind || sg.opId !== curOpId) {
+      if (kind !== curKind || sg.opId !== curOpId || sg.holder !== curHolder) {
         flush();
         curKind = kind;
         curOpId = sg.opId;
+        curHolder = sg.holder;
         pts = [screenPt(cam, sg.z1, sg.x1 / 2)];
       }
       pts.push(screenPt(cam, sg.z2, sg.x2 / 2));
@@ -1217,6 +1289,21 @@ export default function ProfileEditor({
     return d + "Z";
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gen.samples, cam]);
+
+  const innerGhost = useMemo(() => {
+    if (!cam || gen.innerSamples.length < 2) return "";
+    let d = "";
+    gen.innerSamples.forEach((s, i) => {
+      const [x, y] = screenPt(cam, s.z, s.r);
+      d += `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)} `;
+    });
+    for (let i = gen.innerSamples.length - 1; i >= 0; i--) {
+      const [x, y] = screenPt(cam, gen.innerSamples[i].z, -gen.innerSamples[i].r);
+      d += `L ${x.toFixed(1)} ${y.toFixed(1)} `;
+    }
+    return d + "Z";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gen.innerSamples, cam]);
 
   /* ---------- مسیر SVG المان‌های اسکچ ---------- */
   const segPath = (s: SketchSeg, c: Cam, mirror = false): string => {
@@ -1394,6 +1481,11 @@ export default function ProfileEditor({
             <path d={ghostPath} fill="rgba(227,169,78,0.12)" stroke="rgba(227,169,78,0.4)" strokeWidth={1} />
           </g>
         )}
+        {settings.showGhost && innerGhost && (
+          <g style={{ opacity: iso ? 0.15 : 1, ...fadeStyle }}>
+            <path d={innerGhost} fill="rgba(76,201,240,0.10)" stroke="rgba(76,201,240,0.55)" strokeWidth={1} strokeDasharray="5 4" />
+          </g>
+        )}
 
         {/* مسیر ابزار */}
         <g>
@@ -1409,6 +1501,14 @@ export default function ProfileEditor({
               <g key={i} style={{ opacity: dim ? 0.06 : 1, ...fadeStyle }}>
                 <path d={run.d} fill="none" stroke={color} strokeOpacity={matchIso ? 1 : baseOpacity} strokeWidth={(isRapid ? 1 : run.kind === "finish" ? 1.8 : 1.4) + (matchIso ? 0.7 : 0)} strokeDasharray={isRapid ? "4 4" : run.kind === "offset" ? "7 4" : undefined} strokeLinejoin="round" strokeLinecap="round" filter={matchIso ? "url(#curveGlow)" : undefined} />
                 {run.arrows && !dim && <path d={run.arrows} fill={color} fillOpacity={0.95} />}
+                {run.holder === 2 && !dim && !isRapid && (
+                  <g>
+                    <rect x={run.sx - 12} y={run.sy - 21} width={24} height={13} rx={3} fill="#120e09" stroke="#4cc9f0" strokeWidth={1} />
+                    <text x={run.sx} y={run.sy - 11} textAnchor="middle" fontSize={8.5} fontWeight={800} fontFamily="JetBrains Mono, monospace" fill="#4cc9f0">
+                      H2
+                    </text>
+                  </g>
+                )}
               </g>
             );
           })}
@@ -1418,18 +1518,19 @@ export default function ProfileEditor({
         <g style={{ opacity: iso ? 0.3 : 1, ...fadeStyle }}>
           {/* آینهٔ پایین محور */}
           {segs.map((s) => (
-            <path key={`m${s.id}`} d={segPath(s, cam, true)} fill="none" stroke="#e3a94e" strokeOpacity={0.28} strokeWidth={1.6} strokeLinecap="round" />
+            <path key={`m${s.id}`} d={segPath(s, cam, true)} fill="none" stroke={segSide.get(s.id) === "inner" ? "#4cc9f0" : "#e3a94e"} strokeOpacity={0.28} strokeWidth={1.6} strokeLinecap="round" />
           ))}
           {segs.map((s) => {
             const sel = selected.includes(s.id);
             const hov = hoverId === s.id;
             const hasSelPt = selPointSegIds.includes(s.id);
+            const base = segSide.get(s.id) === "inner" ? "#4cc9f0" : "#f3c26b";
             return (
               <path
                 key={s.id}
                 d={segPath(s, cam)}
                 fill="none"
-                stroke={sel ? "#45b394" : hasSelPt ? "#ffd27a" : hov ? "#fff3dc" : "#f3c26b"}
+                stroke={sel ? "#45b394" : hasSelPt ? "#ffd27a" : hov ? "#fff3dc" : base}
                 strokeWidth={sel ? 3.2 : hasSelPt ? 3.4 : hov ? 3 : 2.4}
                 strokeLinecap="round"
                 filter={sel || hasSelPt ? "url(#curveGlow)" : undefined}
@@ -1585,6 +1686,29 @@ export default function ProfileEditor({
             );
           })}
         </g>
+
+        {/* نقطه Split */}
+        {split.enabled && (
+          <g>
+            {(() => {
+              const [x, y] = P(split.z, split.r);
+              const ym = P(split.z, -split.r)[1];
+              return (
+                <g>
+                  {[y, ym].map((yy, k) => (
+                    <g key={k} filter="url(#curveGlow)">
+                      <rect x={x - 7} y={yy - 7} width={14} height={14} transform={`rotate(45 ${x} ${yy})`} fill="#f72585" stroke="#120e09" strokeWidth={1.8} />
+                      <circle cx={x} cy={yy} r={2.2} fill="#ffffff" />
+                    </g>
+                  ))}
+                  <text x={x + 13} y={y - 9} fontSize={10} fontFamily="Vazirmatn, sans-serif" fontWeight={800} fill="#f72585" stroke="#120e09" strokeWidth={3} paintOrder="stroke">
+                    Split
+                  </text>
+                </g>
+              );
+            })()}
+          </g>
+        )}
 
         {/* پیش‌نمایش نامزدهای باکس انتخاب */}
         {marquee &&

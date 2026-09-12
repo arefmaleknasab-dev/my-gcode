@@ -9,6 +9,7 @@ interface Props {
   activeLine: number;
   onCopy: () => void;
   onDownload: () => void;
+  badge?: string;
 }
 
 const TOKEN_RE = /(%|\(.*?\)|[NO]\d+|G\d+(?:\.\d+)?|M\d+|[XYZ]-?\d+(?:\.\d+)?|[FSP]\d+(?:\.\d+)?)/g;
@@ -35,7 +36,7 @@ function tokenize(line: string) {
   return parts;
 }
 
-export default function GCodePanel({ gen, activeLine, onCopy, onDownload }: Props) {
+export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const highlighted = useMemo(() => gen.lines.map((l) => tokenize(l)), [gen.lines]);
@@ -56,6 +57,11 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload }: Prop
             <span className={cn("h-1.5 w-1.5 rounded-full", activeLine >= 0 ? "dot-live bg-ok" : "bg-brass")} />
             {activeLine >= 0 ? "همگام با شبیه‌سازی" : "همگام با طرح"}
           </span>
+          {badge && (
+            <span className="hidden items-center gap-1 rounded-full border border-[#4cc9f0]/40 bg-[#4cc9f0]/10 px-2 py-0.5 text-[10px] font-semibold text-[#4cc9f0] xl:flex">
+              {badge}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <button className="btn !px-2 !py-1.5 text-[11.5px]" onClick={onCopy} title="کپی جی‌کد">

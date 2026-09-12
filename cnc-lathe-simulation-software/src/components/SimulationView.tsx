@@ -42,6 +42,8 @@ const KIND_FA: Record<string, string> = {
   face: "پیشانی‌تراشی",
   finish: "پرداخت نهایی",
   offset: "آفست",
+  bore: "خشن داخل (H2)",
+  borefin: "پرداخت داخل (H2)",
 };
 const KIND_CLS: Record<string, string> = {
   rapid: "text-steel border-steel/40",
@@ -52,6 +54,8 @@ const KIND_CLS: Record<string, string> = {
   face: "text-brass border-brass/40",
   finish: "text-copper border-copper/50",
   offset: "text-[#f59a80] border-[#f59a80]/50",
+  bore: "text-[#4cc9f0] border-[#4cc9f0]/50",
+  borefin: "text-[#f72585] border-[#f72585]/50",
 };
 
 export default function SimulationView({ gen, params, onActiveLine }: Props) {
@@ -64,6 +68,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
 
   const camRef = useRef({ s: 1, ox: 0, oy: 0 });
   const radiiRef = useRef<Float64Array>(new Float64Array(GRID + 1));
+  const cavRef = useRef<Float64Array>(new Float64Array(GRID + 1)); // شعاع حفره داخل کاسه
   const progRef = useRef(0);
   const cursorRef = useRef(0); // سگمنت‌هایی که کاملاً اعمال شده‌اند
   const appliedTRef = useRef(0); // پیشروی اعمال‌شده روی شعاع‌ها
@@ -140,6 +145,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
   /* بازنشانی هنگام تغییر برنامه، ابزار یا شکل مقطع */
   useEffect(() => {
     radiiRef.current = new Float64Array(GRID + 1).fill(initialRadius(params));
+    cavRef.current = new Float64Array(GRID + 1);
     progRef.current = 0;
     cursorRef.current = 0;
     appliedTRef.current = 0;
@@ -181,6 +187,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
       cursorRef.current = 0;
       appliedTRef.current = 0;
       radiiRef.current.fill(initialRadius(paramsRef.current));
+      cavRef.current.fill(0);
     }
     setPlaying(v);
     playingRef.current = v;
@@ -206,6 +213,22 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
       }
       if (ans >= 0 && t >= a[ans] + l[ans]) ans = Math.min(a.length - 1, ans + 1);
       return ans;
+    };
+
+    /* خالی‌کردن حفره داخل: شعاع حفره = بیشترین شعاع نوک ابزار داخل‌تراش.
+       با پنجره‌ای به پهنای نصف گام، فضای بین دو گذر پلکانی هم پر می‌شود تا
+       حفره پیوسته دیده شود (پرداخت نهایی مرز دقیق دیواره را می‌نشاند). */
+    const stampCavity = (z: number, r: number) => {
+      const dzg = paramsRef.current.blankL / GRID;
+      const idx = Math.round(z / dzg);
+      const w = Math.max(1, Math.round((paramsRef.current.doc / 2 + 0.3) / dzg));
+      const cav = cavRef.current;
+      const rr = Math.min(r, paramsRef.current.blankD / 2);
+      for (let k = -w; k <= w; k++) {
+        const j = idx + k;
+        if (j < 0 || j > GRID) continue;
+        if (rr > cav[j]) cav[j] = rr;
+      }
     };
 
     /* براده‌برداری با پروفایل واقعی ابزار: شعاع باقی‌مانده = نوک + ارتفاع کف ابزار */
@@ -236,10 +259,14 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
         const sg = g.segs[i];
         const frac = l[i] > 0 ? Math.min(1, (t - start) / l[i]) : 1;
         if (sg.motion === 1 && frac > 0) {
+          const inner = sg.kind === "bore" || sg.kind === "borefin";
           const n = Math.max(1, Math.ceil((l[i] * frac) / (dzg * 0.8)));
           for (let j = 1; j <= n; j++) {
             const tt = (j / n) * frac;
-            stamp(sg.z1 + (sg.z2 - sg.z1) * tt, (sg.x1 + (sg.x2 - sg.x1) * tt) / 2);
+            const zz = sg.z1 + (sg.z2 - sg.z1) * tt;
+            const rr = (sg.x1 + (sg.x2 - sg.x1) * tt) / 2;
+            if (inner) stampCavity(zz, rr);
+            else stamp(zz, rr);
           }
         }
         if (frac >= 1) cursorRef.current = i + 1;
@@ -254,6 +281,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
 
     const replayTo = (t: number) => {
       radiiRef.current.fill(initialRadius(paramsRef.current));
+      cavRef.current.fill(0);
       cursorRef.current = 0;
       appliedTRef.current = 0;
       if (t > 1e-9) advanceTo(t);
@@ -263,7 +291,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
       const g = genRef.current;
       const a = accRef.current;
       const l = lensRef.current;
-      if (g.segs.length === 0) return { x: paramsRef.current.blankD + 20, z: paramsRef.current.blankL + 10, kind: "rapid" as string, feed: 0, line: -1 };
+      if (g.segs.length === 0) return { x: paramsRef.current.blankD + 20, z: paramsRef.current.blankL + 10, kind: "rapid" as string, feed: 0, line: -1, holder: 1 as 1 | 2 };
       const i = Math.max(0, segIndexAt(Math.min(t, totalRef.current - 1e-9)));
       const sg = g.segs[i];
       const tt = l[i] > 0 ? Math.min(1, Math.max(0, (t - a[i]) / l[i])) : 1;
@@ -273,6 +301,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
         kind: sg.motion === 0 ? "rapid" : sg.kind,
         feed: sg.motion === 0 ? RAPID_RATE : sg.feed,
         line: sg.line,
+        holder: sg.holder,
       };
     };
 
@@ -407,6 +436,44 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
       ctx.lineWidth = 1;
       ctx.stroke();
 
+      /* حفره داخل کاسه */
+      const cav = cavRef.current;
+      let hasCav = false;
+      for (let i = 0; i <= GRID; i++) {
+        if (cav[i] > 0.05) {
+          hasCav = true;
+          break;
+        }
+      }
+      if (hasCav) {
+        ctx.beginPath();
+        ctx.moveTo(X(0), Y(cav[0]));
+        for (let i = 1; i <= GRID; i++) ctx.lineTo(X((i / GRID) * p.blankL), Y(cav[i]));
+        for (let i = GRID; i >= 0; i--) ctx.lineTo(X((i / GRID) * p.blankL), Y(-cav[i]));
+        ctx.closePath();
+        ctx.fillStyle = "#120e09";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(76,201,240,0.65)";
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      /* سیلوئت هدف دیواره داخلی */
+      if (g.innerSamples.length > 1) {
+        ctx.strokeStyle = "rgba(247,37,133,0.5)";
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(X(g.innerSamples[0].z), Y(g.innerSamples[0].r));
+        for (const sm of g.innerSamples) ctx.lineTo(X(sm.z), Y(sm.r));
+        for (let i = g.innerSamples.length - 1; i >= 0; i--) ctx.lineTo(X(g.innerSamples[i].z), Y(-g.innerSamples[i].r));
+        ctx.closePath();
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
       /* ابزار و موقعیت */
       const tx = X(tool.z);
       const ty = Y(tool.x / 2);
@@ -473,6 +540,32 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
         ctx.fill();
       }
 
+      if (tool.holder === 2) {
+        /* هلدر دوم: میله داخل‌تراش چرخیده ‎−۹۰°‎ — افقی، از سمت دهانه وارد حفره می‌شود */
+        const barL = Math.max(30, p.tool.shank * 1.6 * s);
+        const barH = Math.max(7, p.tool.shank * 0.55 * s);
+        ctx.save();
+        ctx.fillStyle = "#333c45";
+        ctx.strokeStyle = "#1d2329";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.rect(tx, ty - barH / 2, barL, barH);
+        ctx.fill();
+        ctx.stroke();
+        /* نوک برنده */
+        ctx.fillStyle = cutting ? "#ffd489" : "#4cc9f0";
+        ctx.beginPath();
+        ctx.moveTo(tx, ty - barH / 2);
+        ctx.lineTo(tx - 7, ty);
+        ctx.lineTo(tx, ty + barH / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#4cc9f0";
+        ctx.font = "bold 9px 'JetBrains Mono', monospace";
+        ctx.textAlign = "left";
+        ctx.fillText("H2", tx + 4, ty - barH / 2 - 4);
+        ctx.restore();
+      } else {
       /* بدنه ابزار — اینسرت مهندسی با پروفایل واقعی (همان هندسهٔ براده‌برداری) */
       const prof = toolProfRef.current;
       const tz = tool.z;
@@ -533,6 +626,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
       ctx.arc(tx, ty, 2, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+      }
     };
 
     const step = (ts: number) => {
@@ -661,6 +755,7 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
             cursorRef.current = 0;
             appliedTRef.current = 0;
             radiiRef.current.fill(initialRadius(paramsRef.current));
+            cavRef.current.fill(0);
             chipsRef.current = [];
             setPlay(false);
           }}

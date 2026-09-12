@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BlankShape, Op, OpType, Params, PPoint, Preset, Sample, ToolHand, ToolSpec, ToolType } from "../lib/lathe";
-import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, INSERT_ANGLE, NOSE_RADII, OP_INFO, PRESETS, ROUGH_MODES, STRATEGIES, findZones, makeOps, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
+import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, findZones, holder2Machine, makeOps, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
 import { cn } from "../utils/cn";
-import { IconCheck, IconCurve, IconEye, IconEyeOff, IconLayers, IconPlus, IconSpindle, IconTool, IconTrash } from "./icons";
+import { IconBowl, IconCheck, IconCurve, IconEye, IconEyeOff, IconLayers, IconPlus, IconSpindle, IconSplit, IconTool, IconTrash } from "./icons";
 
 interface Props {
   params: Params;
   onParams: (patch: Partial<Params>) => void;
   points: PPoint[];
+  innerPoints: PPoint[];
+  splitInfo: { outerDir: 1 | -1; innerDir: 1 | -1; at: { z: number; r: number } } | null;
+  onAutoSplit: () => void;
 
   activePreset: string | null;
   onApplyPreset: (p: Preset) => void;
@@ -22,6 +25,9 @@ export default function ControlsPanel({
   params,
   onParams,
   points,
+  innerPoints,
+  splitInfo,
+  onAutoSplit,
 
   activePreset,
   onApplyPreset,
@@ -34,6 +40,19 @@ export default function ControlsPanel({
   const sig = params.ops.filter((o) => o.on).map((o) => o.type).join(",");
 
   const setOps = (ops: Op[]) => onParams({ ops });
+  const toggleHolder = (id: number) =>
+    setOps(params.ops.map((o) => (o.id === id ? { ...o, holder: o.holder === 2 ? 1 : 2 } : o)));
+  /* انتخاب سریع نوع عملیات: فقط خارج / فقط داخل / هردو */
+  const setOpGroup = (mode: "outer" | "inner" | "both") =>
+    setOps(
+      params.ops.map((o) => ({
+        ...o,
+        on: mode === "both" ? true : mode === "outer" ? OUTER_OPS.includes(o.type) : INNER_OPS.includes(o.type),
+      }))
+    );
+  const outerActive = params.ops.some((o) => o.on && OUTER_OPS.includes(o.type));
+  const innerActive = params.ops.some((o) => o.on && INNER_OPS.includes(o.type));
+  const h2example = holder2Machine(80, 120, params.holder2);
   const moveOp = (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (j < 0 || j >= params.ops.length) return;
@@ -74,7 +93,7 @@ export default function ControlsPanel({
             >
               <svg viewBox="0 0 100 34" className="h-8 w-full">
                 <line x1="0" y1="17" x2="100" y2="17" stroke="rgba(227,169,78,0.3)" strokeWidth="0.8" strokeDasharray="3 2" />
-                <path d={thumbPath(p, 100, 34)} fill="rgba(201,149,90,0.25)" stroke="#e3a94e" strokeWidth="1.1" />
+                <path d={thumbPath(p, 100, 34)} fill="rgba(201,149,90,0.25)" stroke="#e3a94e" strokeWidth="1.1" fillRule="evenodd" />
               </svg>
               <div className={cn("mt-1 text-[10.5px] font-semibold", activePreset === p.id ? "text-brass2" : "text-mute group-hover:text-ink")}>
                 {p.name}
@@ -86,7 +105,7 @@ export default function ControlsPanel({
 
       {/* استراتژی تراش */}
       <Section title="استراتژی تراش" icon={<IconCurve className="h-3.5 w-3.5 text-brass" />}>
-        <div className="mb-2 grid grid-cols-3 gap-1.5">
+        <div className="mb-2 grid grid-cols-2 gap-1.5">
           {STRATEGIES.map((st) => {
             const on = sig === st.types.join(",");
             return (
@@ -133,6 +152,18 @@ export default function ControlsPanel({
                   )}
                 >
                   {isolated ? <IconEyeOff className="h-3.5 w-3.5" /> : <IconEye className="h-3.5 w-3.5" />}
+                </button>
+                <button
+                  onClick={() => toggleHolder(op.id)}
+                  title={op.holder === 2 ? "هلدر ۲ — داخل‌تراش (تبدیل چرخش ‎−۹۰°‎ + آفست) — کلیک برای تغییر" : "هلدر ۱ — اصلی — کلیک برای تغییر"}
+                  className={cn(
+                    "grid h-6 w-7 shrink-0 place-items-center rounded border font-mono text-[9px] font-bold transition-all",
+                    op.holder === 2
+                      ? "border-[#4cc9f0]/60 bg-[#4cc9f0]/15 text-[#4cc9f0]"
+                      : "border-edge text-dim hover:border-edge2 hover:text-ink"
+                  )}
+                >
+                  H{op.holder}
                 </button>
                 <button onClick={() => toggleOp(op.id)} className="shrink-0" title={op.on ? "غیرفعال کردن" : "فعال کردن"}>
                   <span
@@ -223,6 +254,112 @@ export default function ControlsPanel({
           </div>
           <Toggle label="شماره خط (N) — فقط Fanuc" on={params.lineNumbers} onChange={(v) => onParams({ lineNumbers: v })} />
         </div>
+      </Section>
+
+      {/* کاسه: نقطه Split + هلدر دوم */}
+      <Section title="کاسه و هلدر دوم" icon={<IconBowl className="h-3.5 w-3.5 text-brass" />}>
+        <Toggle
+          label="حالت کاسه (نقطه Split)"
+          on={params.split.enabled}
+          onChange={(v) => onParams({ split: { ...params.split, enabled: v } })}
+        />
+        {params.split.enabled ? (
+          <div className="anim-in mt-2 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <Num label="X نقطه Split" unit="mm" value={params.split.z} min={0} max={params.blankL} step={1} onChange={(v) => onParams({ split: { ...params.split, z: v } })} />
+              <Num label="⌀ نقطه Split" unit="mm" value={Math.round(params.split.r * 2 * 100) / 100} min={0} max={params.blankD} step={1} onChange={(v) => onParams({ split: { ...params.split, r: v / 2 } })} />
+            </div>
+            <button onClick={onAutoSplit} className="btn w-full justify-center !py-1.5 text-[11.5px]" title="قرار دادن خودکار نقطه روی لبه (بیشترین X زنجیره)">
+              <IconSplit className="h-3.5 w-3.5" />
+              Split خودکار روی لبه
+            </button>
+            <p className="rounded-md border border-dashed border-edge px-2 py-1 text-[9.5px] leading-4 text-dim">
+              یا با ابزار <span className="font-bold text-[#f72585]">نقطه Split (کلید S)</span> مستقیم روی پروفیل در بوم کلیک کنید.
+            </p>
+
+            {splitInfo ? (
+              <div className="rounded-md border border-edge bg-bg/50 px-2 py-1.5 text-[10px] leading-5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-brass2">شاخه خارجی</span>
+                  <span className="font-mono text-mute" dir="ltr">{splitInfo.outerDir > 0 ? "+X" : "−X"} • {faNum(points.length)} نقطه</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-[#4cc9f0]">شاخه داخلی</span>
+                  <span className="font-mono text-mute" dir="ltr">{splitInfo.innerDir > 0 ? "+X" : "−X"} • {faNum(innerPoints.length)} نقطه</span>
+                </div>
+              </div>
+            ) : (
+              <p className="rounded-md border border-danger/40 bg-danger/10 px-2 py-1.5 text-[10px] leading-4 text-danger">
+                شاخه‌ای ساخته نشد — پروفیل زنجیره‌ای (حداقل ۳ نقطه) ترسیم کنید.
+              </p>
+            )}
+            {splitInfo && innerPoints.length < 2 && (
+              <p className="rounded-md border border-danger/40 bg-danger/10 px-2 py-1.5 text-[10px] leading-4 text-danger">
+                شاخه داخلی خالی است — نقطه Split را روی پروفیل (نزدیک لبه) بگذارید.
+              </p>
+            )}
+
+            {/* نوع عملیات */}
+            <div>
+              <span className="mb-1 block text-[10.5px] font-semibold text-mute">نوع عملیات</span>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  onClick={() => setOpGroup("outer")}
+                  className={cn(
+                    "rounded-md border px-1 py-1.5 text-[10px] font-bold transition-all",
+                    outerActive && !innerActive ? "border-brass/70 bg-brass/10 text-brass2" : "border-edge bg-panel2 text-mute hover:text-ink"
+                  )}
+                >
+                  خارج‌تراشی
+                </button>
+                <button
+                  onClick={() => setOpGroup("inner")}
+                  className={cn(
+                    "rounded-md border px-1 py-1.5 text-[10px] font-bold transition-all",
+                    innerActive && !outerActive ? "border-[#4cc9f0]/70 bg-[#4cc9f0]/10 text-[#4cc9f0]" : "border-edge bg-panel2 text-mute hover:text-ink"
+                  )}
+                >
+                  داخل‌تراشی
+                </button>
+                <button
+                  onClick={() => setOpGroup("both")}
+                  className={cn(
+                    "rounded-md border px-1 py-1.5 text-[10px] font-bold transition-all",
+                    outerActive && innerActive ? "border-teal/70 bg-teal/10 text-teal" : "border-edge bg-panel2 text-mute hover:text-ink"
+                  )}
+                >
+                  هردو
+                </button>
+              </div>
+            </div>
+
+            {/* هلدر دوم */}
+            <div className="rounded-lg border border-[#4cc9f0]/30 bg-[#4cc9f0]/5 p-2">
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-[11px] font-bold text-[#4cc9f0]">هلدر دوم (داخل‌تراش)</span>
+                <span className="rounded-full border border-edge px-2 py-0.5 font-mono text-[9px] font-bold text-mute" dir="ltr">
+                  ROT {HOLDER2_ROT}°
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Num label="X Offset (+X)" unit="mm" value={params.holder2.xOff} min={-100} max={100} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, xOff: v } })} />
+                <Num label="Y Offset (−Y)" unit="mm" value={params.holder2.yOff} min={-100} max={100} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, yOff: v } })} />
+              </div>
+              <p className="mt-1.5 rounded-md bg-bg/60 px-2 py-1 font-mono text-[9px] leading-4 text-mute" dir="ltr">
+                Xm = Xw − Yoff , Ym = Yw − Xoff
+                <br />
+                ex: (80.0, 120.0) → ({h2example.x.toFixed(1)}, {h2example.y.toFixed(1)})
+              </p>
+              <p className="mt-1 text-[9px] leading-4 text-dim">
+                چون هلدر دوم ‎−۹۰°‎ چرخیده، آفست X محلی روی محور Y ماشین اثر می‌گذارد و بالعکس. تبدیل فقط در جی‌کد اعمال می‌شود؛ شبیه‌سازی در مختصات قطعه است.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-1.5 rounded-md border border-dashed border-edge px-2 py-1.5 text-[10px] leading-5 text-dim">
+            با فعال‌سازی، پروفیل در نقطه Split به دو شاخه داخل/خارج تقسیم می‌شود. نمونه آماده: <span className="font-bold text-brass2">«کاسه (داخل+خارج)»</span> از پیش‌تنظیم‌ها.
+          </p>
+        )}
       </Section>
 
       {/* ابزار تراش */}

@@ -16,6 +16,8 @@ const ACI: Record<OpType, number> = {
   copy: 4, // فیروزه‌ای — کپی‌تراشی
   offset: 1, // قرمز — آفست
   finish: 30, // نارنجی — پرداخت
+  "inner-rough": 6, // سرخابی — خشن داخل
+  "inner-finish": 96, // آبی روشن — پرداخت داخل
 };
 
 interface DxfLayer {
@@ -72,7 +74,8 @@ export function buildDxf(segs: Seg[], ops: Op[], blankL: number, blankR: number)
     const runs = runsByOp.get(o.id) ?? [];
     if (!runs.length) continue;
     idx++;
-    layers.push({ name: `OP${idx}-${o.type.toUpperCase()}`, color: ACI[o.type], runs, closed: false });
+    /* مختصات در فضای قطعه؛ عملیات هلدر دوم با پسوند H2 مشخص می‌شوند */
+    layers.push({ name: `OP${idx}-${o.type.toUpperCase()}${o.holder === 2 ? "-H2" : ""}`, color: ACI[o.type], runs, closed: false });
   }
 
   /* محدوده ترسیم */

@@ -59,6 +59,50 @@ export function rotationalEnvelope(blankD: number, shape: BlankShape): {
   };
 }
 
+/* ---------------- نقطه Split و هلدر دوم (کاسه) ---------------- */
+
+/**
+ * نقطه تعیین‌کننده (Split Point): زنجیرهٔ پروفیل را به دو شاخه تقسیم می‌کند —
+ * شاخهٔ «خارج کاسه» (External) و شاخهٔ «داخل کاسه» (Internal).
+ */
+export interface SplitState {
+  enabled: boolean;
+  z: number; // موقعیت طولی نقطه روی پروفیل (mm)
+  r: number; // شعاع نقطه روی پروفیل (mm)
+}
+
+/**
+ * هلدر دوم (داخل‌تراش): نسبت به هلدر اول ۹۰ درجه در جهت منفی چرخیده است.
+ * موقعیت مکانی آن ثابت نیست؛ اپراتور با دو آفست آن را تنظیم می‌کند:
+ * xOff = فاصله در جهت ‎+X‎ محلی ، yOff = فاصله در جهت ‎−Y‎ محلی.
+ */
+export interface Holder2State {
+  xOff: number;
+  yOff: number;
+}
+
+/** چرخش ثابت هلدر دوم نسبت به هلدر اول (درجه) */
+export const HOLDER2_ROT = -90;
+
+export const DEFAULT_SPLIT: SplitState = { enabled: false, z: 90, r: 68 };
+export const DEFAULT_HOLDER2: Holder2State = { xOff: 0, yOff: 0 };
+
+/**
+ * تبدیل مختصات قطعه به مختصات ماشین برای هلدر دوم.
+ * ورودی/خروجی در صفحه XY مودال: x = طول قطعه ، y = قطر.
+ *
+ * چون هلدر دوم نسبت به هلدر اول ‎−۹۰°‎ چرخیده، بردار آفست محلی
+ * ‎L = (xOff, −yOff)‎ در قاب ماشین می‌چرخد:
+ *     ‎T = R(−۹۰°)·L = (Ly, −Lx) = (−yOff, −xOff)‎
+ * و مختصات ماشین از جمع آن با مختصات قطعه به دست می‌آید:
+ *     ‎Xm = Xw − yOff‎  ،  ‎Ym = Yw − xOff‎
+ * یعنی آفست X محلی روی محور Y ماشین اثر می‌گذارد و بالعکس —
+ * دقیقاً همان اثر چرخش ۹۰ درجه‌ای هلدر.
+ */
+export function holder2Machine(xw: number, yw: number, h: Holder2State): { x: number; y: number } {
+  return { x: xw - h.yOff, y: yw - h.xOff };
+}
+
 export interface Params {
   blankD: number; // قطر خام
   blankL: number; // طول خام
@@ -78,6 +122,8 @@ export interface Params {
   lineNumbers: boolean;
   ops: Op[]; // زنجیره عملیات تراش (استراتژی)
   format: CodeFormat; // سبک خروجی جی‌کد
+  split: SplitState; // نقطه تعیین‌کننده داخل/خارج (کاسه)
+  holder2: Holder2State; // آفست‌های قابل تنظیم هلدر دوم
 }
 
 /* ---------------- مشخصات مهندسی ابزار ---------------- */
@@ -255,6 +301,23 @@ export const RAPID_RATE = 2500; // mm/min
 
 let opUid = 1;
 
+/** گروه‌بندی عملیات برای انتخاب سریع «داخل / خارج / هردو» */
+export const OUTER_OPS: OpType[] = ["round", "face", "rough-d", "rough-z", "copy", "offset", "finish"];
+export const INNER_OPS: OpType[] = ["inner-rough", "inner-finish"];
+
+/** هلدر پیش‌فرض هر عملیات: داخل‌تراشی با هلدر دوم، بقیه با هلدر اول */
+export const DEFAULT_HOLDER: Record<OpType, 1 | 2> = {
+  round: 1,
+  face: 1,
+  "rough-d": 1,
+  "rough-z": 1,
+  copy: 1,
+  offset: 1,
+  finish: 1,
+  "inner-rough": 2,
+  "inner-finish": 2,
+};
+
 export const DEFAULT_PARAMS: Params = {
   blankD: 60,
   blankL: 200,
@@ -274,6 +337,8 @@ export const DEFAULT_PARAMS: Params = {
   lineNumbers: true,
   ops: makeOps(["round", "rough-d", "offset", "finish"]),
   format: "modal",
+  split: { ...DEFAULT_SPLIT },
+  holder2: { ...DEFAULT_HOLDER2 },
 };
 
 /* نرمال‌سازی پارامترهای ذخیره‌شده (سازگاری با نسخه‌های قبل) */
@@ -281,7 +346,13 @@ export function normalizeParams(
   raw: (Partial<Params> & { facing?: boolean; spring?: boolean; toolW?: number; finAllow?: number; zigzag?: boolean }) | undefined,
   legacy = false
 ): Params {
-  const base: Params = { ...DEFAULT_PARAMS, ops: makeOps(STRATEGIES[0].types), tool: { ...DEFAULT_TOOL } };
+  const base: Params = {
+    ...DEFAULT_PARAMS,
+    ops: makeOps(STRATEGIES[0].types),
+    tool: { ...DEFAULT_TOOL },
+    split: { ...DEFAULT_SPLIT },
+    holder2: { ...DEFAULT_HOLDER2 },
+  };
   if (!raw) return base;
   const keys: (keyof Params)[] = ["blankD", "blankL", "doc", "offsetDist", "feedRough", "feedFinish", "rpm", "safety", "lineNumbers", "ramp", "simpleFeed"];
   for (const k of keys) {
@@ -309,6 +380,18 @@ export function normalizeParams(
   const ops = normalizeOps(raw.ops, legacy);
   if (ops) base.ops = ops;
   if (raw.format === "modal" || raw.format === "std") base.format = raw.format;
+  /* نقطه Split و هلدر دوم */
+  if (raw.split && typeof raw.split === "object") {
+    const s = raw.split as Partial<SplitState>;
+    if (typeof s.enabled === "boolean") base.split.enabled = s.enabled;
+    if (typeof s.z === "number" && Number.isFinite(s.z)) base.split.z = s.z;
+    if (typeof s.r === "number" && Number.isFinite(s.r)) base.split.r = s.r;
+  }
+  if (raw.holder2 && typeof raw.holder2 === "object") {
+    const h = raw.holder2 as Partial<Holder2State>;
+    if (typeof h.xOff === "number" && Number.isFinite(h.xOff)) base.holder2.xOff = h.xOff;
+    if (typeof h.yOff === "number" && Number.isFinite(h.yOff)) base.holder2.yOff = h.yOff;
+  }
   base.tool = normalizeTool(raw.tool, raw.toolW);
   return base;
 }
@@ -318,16 +401,17 @@ export interface Sample {
   r: number;
 }
 
-export type SegKind = "rapid" | "round" | "face" | "rough" | "roughz" | "copy" | "offset" | "finish";
+export type SegKind = "rapid" | "round" | "face" | "rough" | "roughz" | "copy" | "offset" | "finish" | "bore" | "borefin";
 
 /* ---------------- عملیات و استراتژی‌های تراش ---------------- */
 
-export type OpType = "round" | "face" | "rough-d" | "rough-z" | "copy" | "offset" | "finish";
+export type OpType = "round" | "face" | "rough-d" | "rough-z" | "copy" | "offset" | "finish" | "inner-rough" | "inner-finish";
 
 export interface Op {
   id: number;
   type: OpType;
   on: boolean;
+  holder: 1 | 2; // هلدر مجری عملیات: ۱ = هلدر اصلی (خارج) ، ۲ = هلدر چرخیده (داخل)
 }
 
 export const OP_INFO: Record<OpType, { name: string; desc: string; color: string }> = {
@@ -338,9 +422,11 @@ export const OP_INFO: Record<OpType, { name: string; desc: string; color: string
   copy: { name: "کپی‌تراشی", desc: "مسیرهای موازی با خط طرح", color: "#a3c15c" },
   offset: { name: "آفست", desc: "خط موازی با طرح — مرجع مراحل خشن", color: "#f59a80" },
   finish: { name: "پرداخت نهایی", desc: "حرکت دقیق روی خط اصلی طرح", color: "#e0703c" },
+  "inner-rough": { name: "خشن داخل (کاسه)", desc: "خالی‌کردن داخل کاسه با هلدر دوم", color: "#4cc9f0" },
+  "inner-finish": { name: "پرداخت داخل", desc: "پرداخت دیواره داخلی با هلدر دوم", color: "#f72585" },
 };
 
-export const ALL_OP_TYPES: OpType[] = ["round", "face", "rough-d", "rough-z", "copy", "offset", "finish"];
+export const ALL_OP_TYPES: OpType[] = ["round", "face", "rough-d", "rough-z", "copy", "offset", "finish", "inner-rough", "inner-finish"];
 
 export interface Strategy {
   id: string;
@@ -352,10 +438,11 @@ export const STRATEGIES: Strategy[] = [
   { id: "g71", name: "استاندارد شعاعی", types: ["round", "rough-d", "offset", "finish"] },
   { id: "g72", name: "محوری پله‌ای", types: ["round", "rough-z", "offset", "finish"] },
   { id: "copy", name: "کپی‌تراشی", types: ["round", "copy", "offset", "finish"] },
+  { id: "bowl", name: "کاسه داخل+خارج", types: ["round", "face", "rough-d", "inner-rough", "offset", "finish", "inner-finish"] },
 ];
 
 export function makeOps(types: OpType[]): Op[] {
-  return types.map((t) => ({ id: opUid++, type: t, on: true }));
+  return types.map((t) => ({ id: opUid++, type: t, on: true, holder: DEFAULT_HOLDER[t] }));
 }
 
 export function normalizeOps(raw: unknown, legacy = false): Op[] | null {
@@ -370,7 +457,13 @@ export function normalizeOps(raw: unknown, legacy = false): Op[] | null {
       else if (t === "spring") t = "offset";
     }
     if ((ALL_OP_TYPES as string[]).includes(t)) {
-      out.push({ id: typeof o.id === "number" ? o.id : opUid++, type: t as OpType, on: o.on !== false });
+      const hh = (o as { holder?: unknown }).holder;
+      out.push({
+        id: typeof o.id === "number" ? o.id : opUid++,
+        type: t as OpType,
+        on: o.on !== false,
+        holder: hh === 2 ? 2 : hh === 1 ? 1 : DEFAULT_HOLDER[t as OpType],
+      });
     }
   }
   if (legacy && out.length) {
@@ -398,6 +491,7 @@ export interface Seg {
   kind: SegKind;
   op: OpType | "sys"; // عملیات مولد این حرکت
   opId: number; // شناسه نمونه عملیات (برای نمایش ایزوله و خروجی تفکیکی) — حرکات سیستمی: 1-
+  holder: 1 | 2; // هلدر مجری — مختصات هلدر ۲ در پس‌پردازنده تبدیل می‌شود
   note?: string[]; // کامنت‌های قبل از این حرکت (فقط فرمت استاندارد)
 }
 
@@ -405,6 +499,7 @@ export interface GenResult {
   lines: string[];
   segs: Seg[];
   samples: Sample[];
+  innerSamples: Sample[]; // دیواره داخلی کاسه (خالی وقتی Split غیرفعال است)
   cutLen: number;
   rapidLen: number;
   timeSec: number;
@@ -605,16 +700,21 @@ export function resolveZones(samples: Sample[], manualBounds: number[], z0: numb
 
 /* ---------------- تولید مسیر ابزار و جی‌کد ---------------- */
 
-export function generate(pts: PPoint[], p: Params): GenResult {
+export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResult {
   const R = p.blankD / 2;
   const samples = sampleProfile(pts, R);
+  /* شاخه داخلی فقط وقتی معتبر است که Split فعال باشد و شاخه داخلی داده داشته باشد */
+  const innerSamples = p.split.enabled && innerPts && innerPts.length >= 2 ? sampleProfile(innerPts, R) : [];
   const segs: Seg[] = [];
+  const hasOuter = samples.length >= 2;
+  const hasInner = innerSamples.length >= 2;
 
-  if (samples.length < 2) {
+  if (!hasOuter && !hasInner) {
     return {
       lines: ["%", p.format === "modal" ? "M05" : "(NO PROFILE)", "M02", "%"],
       segs: [],
       samples,
+      innerSamples,
       cutLen: 0,
       rapidLen: 0,
       timeSec: 0,
@@ -632,6 +732,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
   let cur = { ...home };
   let curOp: OpType | "sys" = "sys";
   let curOpId = -1;
+  let curHolder: 1 | 2 = 1;
   let notes: string[] = [];
   const note = (s: string) => notes.push(s);
 
@@ -647,6 +748,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
       kind,
       op: curOp,
       opId: curOpId,
+      holder: curHolder,
       note: notes.length ? notes : undefined,
     });
     notes = [];
@@ -673,9 +775,9 @@ export function generate(pts: PPoint[], p: Params): GenResult {
   /* حرکت سریعِ مستقیم بدون تجزیهٔ امن — فقط برای جابه‌جایی‌های طولی‌ای استفاده   */
   /* می‌شود که امن‌بودنشان جداگانه با clearLongitudinal اثبات شده است (زیگزاگ)      */
   const rawRapid = (x: number, z: number) => pushSeg(0, x, z, 0, "rapid");
-  const z0 = samples[0].z;
-  const zEnd = samples[samples.length - 1].z;
-  const r0 = samples[0].r;
+  const z0 = hasOuter ? samples[0].z : 0;
+  const zEnd = hasOuter ? samples[samples.length - 1].z : p.blankL;
+  const r0 = hasOuter ? samples[0].r : R;
 
   let minR = Infinity;
   for (const s of samples) if (s.r < minR) minR = s.r;
@@ -755,9 +857,11 @@ export function generate(pts: PPoint[], p: Params): GenResult {
   };
 
   /* اجرای زنجیره عملیات (استراتژی تراش) */
+  let innerCleared = false; // آیا حفره داخل با خشن‌کاری خالی شده است؟
   for (const op of p.ops) {
     if (!op.on) continue;
     curOpId = op.id;
+    curHolder = op.holder;
     switch (op.type) {
       /* گرد کردن گوشه‌ها — برای مقاطع غیر دایره‌ای: برداشت قسمت اضافی از        */
       /* شعاع محیطی (دورترین گوشه) تا شعاع محاطی (قطر واقعی) تا مقطع دایره‌ای شود. */
@@ -802,6 +906,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
       /* پیشانی‌تراشی */
       case "face": {
         curOp = "face";
+        if (!hasOuter) break;
         if (R - r0 > 0.05) {
           note("FACING");
           mv(0, p.blankD, z0, 0, "face");
@@ -817,6 +922,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
       /* مسیر، مسیر بعدی را در جهت مخالف ادامه می‌دهد.                              */
       case "rough-d": {
         curOp = "rough-d";
+        if (!hasOuter) break;
 
         /* ------------------------------------------------------------------ */
         /* حالت رفت‌وبرگشتی (زیگزاگ) — مارپیچ دنبال‌کنندهٔ منحنی، فقط بازه‌های فعال:  */
@@ -1014,6 +1120,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
       /* خشن محوری — فرورفتن شعاعی در گام‌های طولی (G72) */
       case "rough-z": {
         curOp = "rough-z";
+        if (!hasOuter) break;
         note("ROUGHING - AXIAL PEEL");
         const stepZ = Math.max(0.5, p.doc);
         let nP = 0;
@@ -1032,6 +1139,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
       /* کپی‌تراشی — مسیرهای موازی با خط طرح */
       case "copy": {
         curOp = "copy";
+        if (!hasOuter) break;
         note("ROUGHING - CONTOUR PARALLELS");
         const kMax = Math.floor((R - floorR - 1e-6) / p.doc);
         for (let k = kMax; k >= 1; k--) {
@@ -1052,9 +1160,73 @@ export function generate(pts: PPoint[], p: Params): GenResult {
         }
         break;
       }
+      /* خشن داخل کاسه — خالی‌کردن پلکانی از دهانه به سمت کف                   */
+      /* هر گذر: فرورفتن محوری کوتاه در مرکز + روتراشی تا دیواره داخلی. این       */
+      /* عملیات با هلدر دوم اجرا می‌شود و مختصات آن در پس‌پردازنده با درنظرگرفتن */
+      /* چرخش ‎−۹۰°‎ و آفست‌های هلدر دوم تبدیل می‌شود.                           */
+      case "inner-rough": {
+        curOp = "inner-rough";
+        if (!hasInner) break;
+        note(`INNER ROUGH - BOWL HOLLOWING (HOLDER ${op.holder})`);
+        const IW = innerSamples;
+        const zBot = IW[0].z;
+        const zRim = IW[IW.length - 1].z;
+        const wallIn = (z: number): number => {
+          if (z <= IW[0].z) return IW[0].r;
+          for (let i = 1; i < IW.length; i++) {
+            if (IW[i].z >= z) {
+              const a = IW[i - 1];
+              const b = IW[i];
+              const t = (z - a.z) / Math.max(1e-9, b.z - a.z);
+              return a.r + (b.r - a.r) * t;
+            }
+          }
+          return IW[IW.length - 1].r;
+        };
+        const step = Math.max(0.5, p.doc);
+        const depths: number[] = [];
+        for (let z = zRim; z > zBot + 0.05; z -= step) depths.push(z);
+        depths.push(zBot);
+        note(`INNER DEPTHS ${depths.length} x ${f2(step)} MM`);
+        const rEntry = 0.6; // ورود در امتداد محور
+        innerCleared = true;
+        depths.forEach((zk, k) => {
+          const target = Math.max(0.8, wallIn(zk) - OD);
+          if (k === 0) {
+            mv(0, 2 * rEntry, p.blankL + p.safety, 0, "rapid"); // ورود از دهانه
+            mv(1, 2 * rEntry, zk, p.feedRough * 0.8, "bore"); // نشست روی صفحه دهانه
+          } else {
+            rawRapid(2 * rEntry, depths[k - 1]); // بازگشت شعاعی در فضای خالی‌شده
+            mv(1, 2 * rEntry, zk, p.feedRough * 0.7, "bore"); // فرورفتن محوری کوتاه
+          }
+          if (target > rEntry + 0.05) mv(1, 2 * target, zk, p.feedRough, "bore"); // روتراشی تا دیواره
+        });
+        /* خروج از دهانه در امتداد محور */
+        rawRapid(2 * rEntry, depths[depths.length - 1]);
+        rawRapid(2 * rEntry, p.blankL + p.safety);
+        mv(0, retractX, p.blankL + p.safety, 0, "rapid");
+        break;
+      }
+      /* پرداخت داخل — دنبال‌کردن دیواره داخلی از کف تا دهانه با هلدر دوم */
+      case "inner-finish": {
+        curOp = "inner-finish";
+        if (!hasInner) break;
+        note(`INNER FINISH - BOWL WALL (HOLDER ${op.holder})`);
+        const IW = innerSamples;
+        const zBot = IW[0].z;
+        const rEntry = 0.6;
+        mv(0, 2 * rEntry, p.blankL + p.safety, 0, "rapid"); // پشت دهانه
+        if (innerCleared) rawRapid(2 * rEntry, zBot); // حفره خالی است — ورود سریع
+        else mv(1, 2 * rEntry, zBot, p.feedRough * 0.6, "borefin"); // بدون خشن‌کاری: ورود با فیدر
+        for (let i = 0; i < IW.length; i++) mv(1, 2 * IW[i].r, IW[i].z, p.feedFinish, "borefin");
+        rawRapid(2 * IW[IW.length - 1].r, p.blankL + p.safety); // خروج محوری از دهانه
+        mv(0, retractX, p.blankL + p.safety, 0, "rapid");
+        break;
+      }
       /* پرداخت نهایی روی خط اصلی طرح */
       case "finish": {
         curOp = "finish";
+        if (!hasOuter) break;
         note("FINISHING - MAIN PROFILE");
         /* نزدیک‌شدن در ارتفاع امن، سپس فرورفتن با فیدر (حرکت برشی امن) */
         mv(0, retractX, z0, 0, "rapid");
@@ -1064,6 +1236,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
       /* آفست — خط موازی با طرح؛ مرجع مراحل خشن و نیمه‌پرداخت قبل از پرداخت */
       case "offset": {
         curOp = "offset";
+        if (!hasOuter) break;
         if (OD > 0.01) {
           note(`OFFSET PASS +${f2(OD)} MM (PARALLEL TO PROFILE)`);
           /* نزدیک‌شدن در ارتفاع امن، سپس فرورفتن با فیدر (حرکت برشی امن) */
@@ -1080,6 +1253,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
   /* پایان */
   curOp = "sys";
   curOpId = -1;
+  curHolder = 1;
   note("END OF PROGRAM");
   mv(0, retractX, p.blankL + 2 * p.safety, 0, "rapid");
   mv(0, home.x, home.z, 0, "rapid");
@@ -1112,16 +1286,25 @@ export function generate(pts: PPoint[], p: Params): GenResult {
   if (envVol.hasCorners && envVol.outR > R) {
     vol += Math.PI * (envVol.outR * envVol.outR - R * R) * p.blankL;
   }
+  /* حجم حفره داخل کاسه */
+  if (innerSamples.length > 1) {
+    for (let i = 1; i < innerSamples.length; i++) {
+      const dz = Math.abs(innerSamples[i].z - innerSamples[i - 1].z);
+      const rAvg = (innerSamples[i].r + innerSamples[i - 1].r) / 2;
+      vol += Math.PI * rAvg * rAvg * dz;
+    }
+  }
 
   return {
     lines,
     segs,
     samples,
+    innerSamples,
     cutLen,
     rapidLen,
     timeSec,
     volumeCm3: vol / 1000,
-    roughLayers: p.ops.filter((o) => o.on && (o.type === "rough-d" || o.type === "rough-z" || o.type === "offset")).length,
+    roughLayers: p.ops.filter((o) => o.on && (o.type === "rough-d" || o.type === "rough-z" || o.type === "offset" || o.type === "inner-rough")).length,
     format: p.format,
   };
 }
@@ -1129,7 +1312,7 @@ export function generate(pts: PPoint[], p: Params): GenResult {
 /* فیدر بهینه: وقتی simpleFeed روشن است، فیدر هر حرکت به یکی از دو فیدر اصلی  */
 /* (خشن برای عملیات‌های برداشت، پرداخت برای پرداخت و آفست) ساده می‌شود تا در  */
 /* جی‌کد فقط دو F باقی بماند و G1/F های تکراری حذف شوند.                     */
-const FINISH_KINDS: SegKind[] = ["finish", "offset"];
+const FINISH_KINDS: SegKind[] = ["finish", "offset", "borefin"];
 function normFeed(sg: Seg, p: Params): number {
   if (!p.simpleFeed) return sg.feed;
   return FINISH_KINDS.includes(sg.kind) ? p.feedFinish : p.feedRough;
@@ -1149,19 +1332,28 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
   lines.push(`(STOCK D${p.blankD} x L${p.blankL} MM)`);
   lines.push(`(TOOL: ${toolDesc(p.tool)})`);
   lines.push(`(DOC ${p.doc} MM - OFFSET ${p.offsetDist} MM)`);
+  const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
+  if (usesH2) {
+    lines.push(`(HOLDER2: XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT})`);
+    lines.push(`(H2 MAP: Xm = Xw - YOFF , Ym = Yw - XOFF)`);
+  }
   emit("G21 G18 G40");
   let lastFeed = -1;
   for (let i = 0; i < segs.length; i++) {
     const sg = segs[i];
     if (sg.note) for (const c of sg.note) lines.push(`(${c})`);
+    /* حرکات هلدر دوم با تبدیل چرخش+آفست به مختصات ماشین صادر می‌شوند */
+    const m = sg.holder === 2 ? holder2Machine(sg.z2, sg.x2, p.holder2) : null;
+    const Xo = m ? m.y : sg.x2;
+    const Zo = m ? m.x : sg.z2;
     if (sg.motion === 0) {
-      sg.line = emit(`G0 X${f2(sg.x2)} Z${f2(sg.z2)}`);
+      sg.line = emit(`G0 X${f2(Xo)} Z${f2(Zo)}`);
     } else {
       const F = Math.max(1, Math.round(normFeed(sg, p)));
       /* در حالت فیدر بهینه، F فقط هنگام تغییر تکرار می‌شود وگرنه حذف می‌شود */
       const fWord = !p.simpleFeed || F !== lastFeed ? ` F${F}` : "";
       lastFeed = F;
-      sg.line = emit(`G1 X${f2(sg.x2)} Z${f2(sg.z2)}${fWord}`);
+      sg.line = emit(`G1 X${f2(Xo)} Z${f2(Zo)}${fWord}`);
     }
     if (i === 0) {
       emit(`M3 S${Math.round(p.rpm)}`);
@@ -1182,16 +1374,29 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
 
 function buildModalLines(segs: Seg[], p: Params): string[] {
   const lines: string[] = ["%", "G90", "G49", `M3 S${Math.round(p.rpm)}`];
+  const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
+  if (usesH2) {
+    lines.push(`(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw-YOFF Ym=Yw-XOFF)`);
+  }
   const f3 = (v: number) => v.toFixed(3);
   let mode: -1 | 0 | 1 = -1;
   let mFeed = -1;
   let lastOp: OpType | "sys" = "sys";
+  let lastHolder: 1 | 2 = 1;
   for (const sg of segs) {
+    /* حرکات هلدر دوم با تبدیل چرخش+آفست به مختصات ماشین صادر می‌شوند */
+    const m1 = sg.holder === 2 ? holder2Machine(sg.z1, sg.x1, p.holder2) : null;
+    const m2 = sg.holder === 2 ? holder2Machine(sg.z2, sg.x2, p.holder2) : null;
+    const X1 = m1 ? m1.x : sg.z1;
+    const Y1 = m1 ? m1.y : sg.x1;
+    const X2 = m2 ? m2.x : sg.z2;
+    const Y2 = m2 ? m2.y : sg.x2;
     const words: string[] = [];
-    if (Math.abs(sg.z2 - sg.z1) > 1e-9) words.push(`X${f3(sg.z2)}`);
-    if (Math.abs(sg.x2 - sg.x1) > 1e-9) words.push(`Y${f3(sg.x2)}`);
-    if (sg.op !== lastOp) lines.push("");
+    if (Math.abs(X2 - X1) > 1e-9) words.push(`X${f3(X2)}`);
+    if (Math.abs(Y2 - Y1) > 1e-9) words.push(`Y${f3(Y2)}`);
+    if (sg.op !== lastOp || sg.holder !== lastHolder) lines.push("");
     lastOp = sg.op;
+    lastHolder = sg.holder;
     if (words.length === 0) {
       sg.line = lines.length - 1;
       continue;
@@ -1224,6 +1429,14 @@ export interface Preset {
   blankD: number;
   blankL: number;
   pts: [number, number, boolean][]; // z, r, smooth
+  /** زنجیره دیواره کاسه به ترتیب مسیر: خارج → لبه → داخل (فقط پریست کاسه) */
+  wall?: [number, number, boolean][];
+  /** نقطه Split پیشنهادی روی دیواره */
+  split?: { z: number; r: number };
+  /** استراتژی پیشنهادی هنگام اعمال پریست */
+  strategy?: string;
+  /** شکل مقطع خام پیشنهادی */
+  shape?: BlankShape;
 }
 
 export const PRESETS: Preset[] = [
@@ -1260,6 +1473,29 @@ export const PRESETS: Preset[] = [
     pts: [
       [0, 10, true], [12, 22, true], [30, 42, true], [52, 58, true],
       [70, 67, true], [82, 71, true], [90, 72, false],
+    ],
+  },
+  {
+    id: "bowl-both",
+    name: "کاسه (داخل+خارج)",
+    blankD: 150,
+    blankL: 90,
+    shape: "circle",
+    strategy: "bowl",
+    split: { z: 90, r: 68 },
+    pts: [
+      [0, 16, false], [8, 19, true], [18, 27, true], [32, 41, true], [48, 54, true],
+      [62, 63, true], [74, 69, true], [84, 71.5, true], [90, 72, false],
+    ],
+    wall: [
+      /* شاخه خارجی: از کف تا لبه بیرونی */
+      [0, 16, false], [8, 19, true], [18, 27, true], [32, 41, true], [48, 54, true],
+      [62, 63, true], [74, 69, true], [84, 71.5, true], [90, 72, false],
+      /* ضخامت لبه */
+      [90, 64, false],
+      /* شاخه داخلی: از لبه داخلی تا کف حفره */
+      [82, 61, true], [70, 55, true], [56, 45, true], [42, 32, true],
+      [32, 20, true], [26, 10, true], [24, 4, false],
     ],
   },
   {
@@ -1309,11 +1545,39 @@ export function thumbPath(p: Preset, w: number, h: number): string {
   const R = p.blankD / 2;
   const sx = (z: number) => 3 + (z / p.blankL) * (w - 6);
   const sy = (r: number) => h / 2 - (r / R) * (h / 2 - 3);
+  const loop = (pts: [number, number][]): string => {
+    let d = `M ${sx(pts[0][0]).toFixed(1)} ${sy(pts[0][1]).toFixed(1)}`;
+    for (let i = 1; i < pts.length; i++) d += ` L ${sx(pts[i][0]).toFixed(1)} ${sy(pts[i][1]).toFixed(1)}`;
+    for (let i = pts.length - 1; i >= 0; i--) d += ` L ${sx(pts[i][0]).toFixed(1)} ${(h - sy(pts[i][1])).toFixed(1)}`;
+    return d + " Z";
+  };
+  /* کاسه: حلقه ماده + حلقه حفره (با fill-rule evenodd حفره خالی دیده می‌شود) */
+  if (p.wall && p.split) {
+    const wall2: [number, number][] = p.wall.map(([z, r]) => [z, r]);
+    /* شروع شاخه داخلی = جایی که مسیر در Z برمی‌گردد (لبه)؛ وگرنه نزدیک‌ترین رأس */
+    let bi = -1;
+    for (let i = 0; i < wall2.length - 1; i++) {
+      if (wall2[i + 1][0] < wall2[i][0] - 1e-6) {
+        bi = i + 1;
+        break;
+      }
+    }
+    if (bi < 0) {
+      let bd = Infinity;
+      wall2.forEach(([z, r], i) => {
+        const d = Math.hypot(z - p.split!.z, r - p.split!.r);
+        if (d < bd) {
+          bd = d;
+          bi = i;
+        }
+      });
+    }
+    const inner = wall2.slice(bi).map(([z, r]): [number, number] => [z, Math.max(0.5, r)]);
+    if (inner.length >= 2) return `${loop(wall2)} ${loop(inner)}`;
+    return loop(wall2);
+  }
   const pts = p.pts;
-  let d = `M ${sx(pts[0][0]).toFixed(1)} ${sy(pts[0][1]).toFixed(1)}`;
-  for (let i = 1; i < pts.length; i++) d += ` L ${sx(pts[i][0]).toFixed(1)} ${sy(pts[i][1]).toFixed(1)}`;
-  for (let i = pts.length - 1; i >= 0; i--) d += ` L ${sx(pts[i][0]).toFixed(1)} ${(h - sy(pts[i][1])).toFixed(1)}`;
-  return d + " Z";
+  return loop(pts.map(([z, r]): [number, number] => [z, r]));
 }
 
 export function fmtTime(sec: number): string {
