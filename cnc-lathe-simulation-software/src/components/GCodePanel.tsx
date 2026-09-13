@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { GenResult } from "../lib/lathe";
 import { fmtTime } from "../lib/lathe";
 import { cn } from "../utils/cn";
@@ -37,11 +37,14 @@ function tokenize(line: string) {
 }
 
 
-interface RowProps { ln: number; parts: { text: string; cls: string }[]; active: boolean }
+const ROW_H = 20; // ارتفاع ثابت هر سطر (px) — سطرها تک‌خط و یکدست‌اند
+const OVERSCAN = 8; // سطرهای اضافی بالا/پایین دید برای اسکرول نرم
+
+interface RowProps { ln: number; parts: { text: string; cls: string }[]; active: boolean; top: number }
 /* سطر memo: هنگام پخش شبیه‌سازی فقط ۲ سطر (قبلی/فعلی) بازرندر می‌شوند نه ~۱۶۰۰ سطر */
-const GCodeLine = memo(function GCodeLine({ ln, parts, active }: RowProps) {
+const GCodeLine = memo(function GCodeLine({ ln, parts, active, top }: RowProps) {
   return (
-    <div data-ln={ln} className={cn("gc-line", active && "border-brass bg-brass/10")} style={{ textAlign: "left" }}>
+    <div data-ln={ln} className={cn("gc-line", active && "border-brass bg-brass/10")} style={{ textAlign: "left", position: "absolute", top, left: 0, right: 0, height: ROW_H, overflow: "hidden" }}>
       <span className="mr-2 inline-block w-7 select-none text-right text-[10px] text-dim">{ln + 1}</span>
       {parts.map((t, j) => (
         <span key={j} className={t.cls}>
@@ -57,11 +60,38 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
 
   const highlighted = useMemo(() => gen.lines.map((l) => tokenize(l)), [gen.lines]);
 
+  /* مجازی‌سازی: فقط سطرهای داخل دید (+حاشیه) رندر می‌شوند تا تایپ/اسکرول گیر نکند */
+  const [view, setView] = useState({ top: 0, height: 600 });
   useEffect(() => {
-    if (activeLine < 0 || !bodyRef.current) return;
-    const el = bodyRef.current.querySelector(`[data-ln="${activeLine}"]`);
-    el?.scrollIntoView({ block: "nearest" });
+    const el = bodyRef.current;
+    if (!el) return;
+    setView({ top: el.scrollTop, height: el.clientHeight });
+    const ro = new ResizeObserver(() => {
+      const n = { top: el.scrollTop, height: el.clientHeight };
+      setView((v) => (v.top === n.top && v.height === n.height ? v : n));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /* دنبال‌کردن خط فعال شبیه‌سازی (معادل block:nearest) */
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || activeLine < 0) return;
+    const y = activeLine * ROW_H;
+    if (y < el.scrollTop + OVERSCAN * ROW_H) el.scrollTop = Math.max(0, y - OVERSCAN * ROW_H);
+    else if (y + ROW_H > el.scrollTop + el.clientHeight - OVERSCAN * ROW_H)
+      el.scrollTop = y + ROW_H - el.clientHeight + OVERSCAN * ROW_H;
   }, [activeLine]);
+
+  const onScroll = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const n = { top: el.scrollTop, height: el.clientHeight };
+    setView((v) => (v.top === n.top && v.height === n.height ? v : n));
+  };
+  const start = Math.max(0, Math.floor(view.top / ROW_H) - OVERSCAN);
+  const end = Math.min(highlighted.length, Math.ceil((view.top + view.height) / ROW_H) + OVERSCAN);
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-lg border border-edge bg-panel">
@@ -99,10 +129,12 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
         <Stat label="عملیات خشن" value={String(gen.roughLayers)} />
       </div>
 
-      <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto py-1.5" dir="ltr">
-        {highlighted.map((parts, i) => (
-          <GCodeLine key={i} ln={i} parts={parts} active={i === activeLine} />
-        ))}
+      <div ref={bodyRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto" dir="ltr">
+        <div style={{ height: highlighted.length * ROW_H, position: "relative" }}>
+          {highlighted.slice(start, end).map((parts, k) => (
+            <GCodeLine key={start + k} ln={start + k} parts={parts} active={start + k === activeLine} top={(start + k) * ROW_H} />
+          ))}
+        </div>
       </div>
 
       <div className="flex items-center justify-between border-t border-edge px-3 py-1.5 text-[10.5px] text-dim">
