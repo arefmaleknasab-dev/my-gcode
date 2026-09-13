@@ -1369,13 +1369,18 @@ export interface PlannedBridge {
   fromH: 1 | 2;
   toH: 1 | 2;
   from: { u: number; v: number }; // نقطه شروع پل (= پایان پست‌شده قبلی)
-  legs: { u: number; v: number }[]; // سه نقطه میانی/پایانی (همه پله‌ها محوری)
+  legs: { u: number; v: number }[]; // نقطه‌های میانی/پایانی (همه پله‌ها محوری)
+  /* جذب: اگر سگمنت بعد از پل، سریعِ محوریِ طولی باشد، پله ورود حذف می‌شود و
+     خودِ آن سگمنت (بلوک G0 خودش) مسیر ورود+سگمنت را یکجا طی می‌کند —
+     بدون برگشت (نوک) و بدون افتادن دو خط روی هم */
+  absorbed: boolean;
 }
 
 /* برنامه‌ریزی پل‌های امن: هر ناپیوستگی فضای ماشین (تعویض هلدر یا شروع
-   دور از خانه) با سه پله محوری از گوشه امن به هم وصل می‌شود:
+   دور از خانه) با پله‌های محوری از گوشه امن به هم وصل می‌شود:
    خروج در ارتفاع مبدأ تا بیرون همه محتوا، پیمایش در کریدور امن،
-   ورود در ارتفاع مقصد — بدون هیچ حرکت مورب از فضای قطعه. */
+   ورود در ارتفاع مقصد — بدون هیچ حرکت مورب از فضای قطعه.
+   سگمنت‌های صفر (بدون بلوک) در تشخیص ناپیوستگی نادیده گرفته می‌شوند. */
 export function planBridges(segs: Seg[], p: Params): {
   tc: { u: number; v: number };
   home: { u: number; v: number };
@@ -1401,17 +1406,37 @@ export function planBridges(segs: Seg[], p: Params): {
   const tc = { u: maxU + p.safety, v: maxV + p.safety };
   const bridges: PlannedBridge[] = [];
   const jump = (a: { u: number; v: number }, b: { u: number; v: number }) => Math.hypot(a.u - b.u, a.v - b.v);
-  const legsFor = (a: { u: number; v: number }, b: { u: number; v: number }) => [
-    { u: tc.u, v: a.v },
-    { u: tc.u, v: b.v },
-    { u: b.u, v: b.v },
-  ];
-  if (n > 0 && jump(home, starts[0]) > BRIDGE_MIN_JUMP) {
-    bridges.push({ atIndex: 0, fromH: 1, toH: segs[0].holder, from: home, legs: legsFor(home, starts[0]) });
+  const legsFor = (a: { u: number; v: number }, b: { u: number; v: number }, absorb: boolean) => {
+    const legs = [
+      { u: tc.u, v: a.v },
+      { u: tc.u, v: b.v },
+      { u: b.u, v: b.v },
+    ];
+    return absorb ? legs.slice(0, 2) : legs;
+  };
+  /* جذب مجاز است فقط وقتی سگمنت هدف، یک حرکت سریعِ غیرصفرِ محوریِ طولی باشد؛
+     در این صورت بلوک G0 خودش (از کریدور امن تا انتهای سگمنت) جای پله ورود
+     می‌نشیند. فیدرها (برش!) و حرکات شعاعی هرگز جذب نمی‌شوند. */
+  const absorbable = (j: number) =>
+    segs[j].motion === 0 && Math.abs(ends[j].v - starts[j].v) < 1e-9;
+  /* فقط سگمنت‌های غیرصفر (دارای بلوک) در تشخیص ناپیوستگی شرکت می‌کنند */
+  const nz: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (jump(starts[i], ends[i]) > 1e-9) nz.push(i);
   }
-  for (let i = 1; i < n; i++) {
-    if (jump(ends[i - 1], starts[i]) > BRIDGE_MIN_JUMP) {
-      bridges.push({ atIndex: i, fromH: segs[i - 1].holder, toH: segs[i].holder, from: ends[i - 1], legs: legsFor(ends[i - 1], starts[i]) });
+  const mkBridge = (atIndex: number, fromH: 1 | 2, toH: 1 | 2, from: { u: number; v: number }) => {
+    const b = starts[atIndex];
+    const absorb = absorbable(atIndex);
+    bridges.push({ atIndex, fromH, toH, from, legs: legsFor(from, b, absorb), absorbed: absorb });
+  };
+  if (nz.length > 0 && jump(home, starts[nz[0]]) > BRIDGE_MIN_JUMP) {
+    mkBridge(nz[0], 1, segs[nz[0]].holder, home);
+  }
+  for (let k = 1; k < nz.length; k++) {
+    const i = nz[k];
+    const pv = nz[k - 1];
+    if (jump(ends[pv], starts[i]) > BRIDGE_MIN_JUMP) {
+      mkBridge(i, segs[pv].holder, segs[i].holder, ends[pv]);
     }
   }
   return { tc, home, bridges };
