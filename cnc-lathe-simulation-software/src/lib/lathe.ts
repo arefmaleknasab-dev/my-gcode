@@ -123,6 +123,7 @@ export interface Params {
   spreadG0: boolean; // گسترش G0 در جی‌کد: حرکت‌های سریع روی‌هم با گام ۳mm فقط به سمت بیرون باز می‌شوند (فیدرها عوض نمی‌شوند)
   split: SplitState; // نقطه تعیین‌کننده داخل/خارج (کاسه)
   holder2: Holder2State; // آفست‌های قابل تنظیم هلدر دوم
+  viewOnly?: boolean; // فقط‌نمایش برای سیمکو: مختصات قطعه (آفست هلدر نادیده) + هشدار و توقف — هرگز روی دستگاه اجرا نشود
 }
 
 /* ---------------- مشخصات مهندسی ابزار ---------------- */
@@ -1586,6 +1587,11 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
     lines.push(`(H2 MAP: Xm = Xw + XOFF , Ym = Yw - YOFF)`);
   }
   emit("G21 G18 G40");
+  if (p.viewOnly) {
+    lines.push("(VIEW ONLY - WORKPIECE COORDS, H2 OFFSETS IGNORED)");
+    lines.push("(DO NOT RUN ON MACHINE)");
+    emit("M00");
+  }
   const plan = planBridges(segs, p);
   const bridgeAt = new Map<number, PlannedBridge>();
   for (const b of plan.bridges) bridgeAt.set(b.atIndex, b);
@@ -1654,6 +1660,10 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
 
 function buildModalLines(segs: Seg[], p: Params): string[] {
   const lines: string[] = ["%", "G21 G40 G90", "G49", `M3 S${Math.round(p.rpm)}`];
+  if (p.viewOnly) {
+    /* خروجی فقط‌نمایش (مختصات قطعه برای سیمکو): هشدار + توقف پیش از هر حرکت تا روی دستگاه اجرا نشود */
+    lines.splice(1, 0, "(VIEW ONLY - WORKPIECE COORDS, H2 OFFSETS IGNORED)", "(DO NOT RUN ON MACHINE)", "M00");
+  }
   const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
   if (usesH2) {
     lines.push(`(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw+XOFF Ym=Yw-YOFF)`);

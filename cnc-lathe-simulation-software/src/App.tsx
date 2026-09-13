@@ -197,19 +197,16 @@ export default function App() {
   /* متن جی‌کد با پایان‌خط CRLF (سازگار با CIMCO/ویندوز و کنترلرها) */
   const gcodeText = () => gen.lines.join("\r\n");
 
-  const copyGCode = async () => {
-    const text = gcodeText();
-    /* ۱) Clipboard API مدرن — روی http یا داخل iframe ممکن است در دسترس نباشد */
+  /* کپی مقاوم: Clipboard API مدرن + fallback برای http/iframe */
+  const copyText = async (text: string): Promise<boolean> => {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
-        showToast("جی‌کد در کلیپ‌بورد کپی شد");
-        return;
+        return true;
       }
     } catch {
       /* ادامه به fallback */
     }
-    /* ۲) fallback: textarea موقت + execCommand (روی http هم کار می‌کند) */
     try {
       const ta = document.createElement("textarea");
       ta.value = text;
@@ -224,11 +221,21 @@ export default function App() {
       ta.setSelectionRange(0, ta.value.length);
       const ok = document.execCommand("copy");
       document.body.removeChild(ta);
-      if (!ok) throw new Error("copy-failed");
-      showToast("جی‌کد در کلیپ‌بورد کپی شد");
+      return ok;
     } catch {
-      showToast("کپی ممکن نشد — فایل را دانلود کنید", "warn");
+      return false;
     }
+  };
+  const copyGCode = async () => {
+    if (await copyText(gcodeText())) showToast("جی‌کد در کلیپ‌بورد کپی شد");
+    else showToast("کپی ممکن نشد — فایل را دانلود کنید", "warn");
+  };
+  /* کپی فقط‌نمایش برای سیمکو: تولید لحظه‌ای با آفست صفر هلدر (مختصات قطعه،
+     دقیقاً مطابق پیش‌نمایش) + هشدار و M00 تا روی دستگاه اجرا نشود */
+  const copyViewGCode = async () => {
+    const view = generate(points, { ...params, holder2: { xOff: 0, yOff: 0 }, viewOnly: true }, innerPoints);
+    if (await copyText(view.lines.join("\r\n"))) showToast("مختصات قطعه کپی شد — فقط برای سیمکو (روی دستگاه اجرا نکن!)", "warn");
+    else showToast("کپی ممکن نشد — فایل را دانلود کنید", "warn");
   };
   const downloadGCode = () => {
     const blob = new Blob([gcodeText()], { type: "text/plain;charset=utf-8" });
@@ -292,6 +299,9 @@ export default function App() {
           <button className="btn !px-2.5 !py-1.5 text-[11.5px]" onClick={copyGCode}>
             کپی جی‌کد
           </button>
+          <button className="btn !px-2.5 !py-1.5 text-[11.5px]" onClick={copyViewGCode} title="کپی مختصات قطعه (بدون آفست هلدر) — فقط برای نمایش در سیمکو، نه اجرا روی دستگاه">
+            کپی سیمکو
+          </button>
           <button className="btn btn-brass !px-2.5 !py-1.5 text-[11.5px]" onClick={downloadGCode}>
             <IconDownload className="h-3.5 w-3.5" />
             دانلود NC
@@ -349,6 +359,7 @@ export default function App() {
             gen={gen}
             activeLine={activeLine}
             onCopy={copyGCode}
+            onCopyView={copyViewGCode}
             onDownload={downloadGCode}
             badge={
               params.split.enabled
