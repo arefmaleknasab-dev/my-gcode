@@ -342,8 +342,8 @@ export default function ControlsPanel({
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <Num label="X Offset (+X)" unit="mm" value={params.holder2.xOff} min={-100} max={100} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, xOff: v } })} />
-                <Num label="Y Offset (−Y)" unit="mm" value={params.holder2.yOff} min={-100} max={100} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, yOff: v } })} />
+                <Num label="X Offset (+X)" unit="mm" value={params.holder2.xOff} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, xOff: v } })} />
+                <Num label="Y Offset (−Y)" unit="mm" value={params.holder2.yOff} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, yOff: v } })} />
               </div>
               <p className="mt-1.5 rounded-md bg-bg/60 px-2 py-1 font-mono text-[9px] leading-4 text-mute" dir="ltr">
                 Xm = Xw − Yoff , Ym = Yw − Xoff
@@ -873,8 +873,8 @@ function Num({
   label: string;
   unit: string;
   value: number;
-  min: number;
-  max: number;
+  min?: number;
+  max?: number;
   step: number;
   onChange: (v: number) => void;
 }) {
@@ -885,10 +885,18 @@ function Num({
     if (!focused.current) setText(String(value));
   }, [value]);
 
+  /* اگر min/max داده نشده باشد، عدد هیچ محدودیتی ندارد */
+  const clamp = (v: number) => {
+    let r = Math.round(v * 100) / 100;
+    if (min !== undefined) r = Math.max(min, r);
+    if (max !== undefined) r = Math.min(max, r);
+    return r;
+  };
+
   const commit = (raw: string) => {
     const v = parseFloat(raw.replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d))));
     if (!Number.isNaN(v) && Number.isFinite(v)) {
-      onChange(Math.min(max, Math.max(min, Math.round(v * 100) / 100)));
+      onChange(clamp(v));
     }
   };
 
@@ -916,13 +924,13 @@ function Num({
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             if (e.key === "ArrowUp") {
               e.preventDefault();
-              const v = Math.min(max, Math.round((value + step) * 100) / 100);
+              const v = clamp(value + step);
               onChange(v);
               setText(String(v));
             }
             if (e.key === "ArrowDown") {
               e.preventDefault();
-              const v = Math.max(min, Math.round((value - step) * 100) / 100);
+              const v = clamp(value - step);
               onChange(v);
               setText(String(v));
             }
