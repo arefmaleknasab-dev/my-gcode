@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BlankShape, Op, OpType, Params, PPoint, Preset, Sample, ToolHand, ToolSpec, ToolType } from "../lib/lathe";
-import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, findZones, machineUV, makeOps, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
+import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, findZones, machineUV, makeOps, normalOffset, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
 import { cn } from "../utils/cn";
 import { IconBowl, IconCheck, IconCurve, IconEye, IconEyeOff, IconLayers, IconPlus, IconSpindle, IconSplit, IconTool, IconTrash } from "./icons";
 
@@ -70,7 +70,7 @@ function ControlsPanel({
   const { zoneSamples, autoZones } = useMemo(() => {
     const blankR = params.blankD / 2;
     const samples = sampleProfile(points, blankR);
-    const off: Sample[] = samples.map((s) => ({ z: s.z, r: Math.min(blankR, s.r + params.offsetDist) }));
+    const off: Sample[] = normalOffset(samples, params.offsetDist, true).map((s) => ({ z: s.z, r: Math.min(blankR, s.r) }));
     return { zoneSamples: off, autoZones: findZones(off) };
   }, [points, params.blankD, params.offsetDist]);
 

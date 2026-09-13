@@ -413,7 +413,42 @@ export function normalOffset(pts: Sample[], dist: number, outward: boolean): Sam
     } else if (outward ? nr < 0 : nr > 0) { nz = -nz; nr = -nr; }
     out[i] = { z: pts[i].z + dist * nz, r: pts[i].r + dist * nr };
   }
-  return out;
+  return trimOffsetLoops(out);
+}
+
+/* تقاطع واقعی (داخلی-داخلی، نه سرهای مشترک) دو پاره‌خط */
+function segCross(p1: Sample, p2: Sample, p3: Sample, p4: Sample): Sample | null {
+  const dz1 = p2.z - p1.z, dr1 = p2.r - p1.r, dz2 = p4.z - p3.z, dr2 = p4.r - p3.r;
+  const d = dz1 * dr2 - dr1 * dz2;
+  if (Math.abs(d) < 1e-12) return null;
+  const t = ((p3.z - p1.z) * dr2 - (p3.r - p1.r) * dz2) / d;
+  const u = ((p3.z - p1.z) * dr1 - (p3.r - p1.r) * dz1) / d;
+  if (t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6)
+    return { z: p1.z + t * dz1, r: p1.r + t * dr1 };
+  return null;
+}
+
+/* حذف حلقه‌های خودتقاطعی آفست در کنج‌های مقعر: هر جا دو پاره غیرمجاور هم را
+   قطع کنند، حلقه بین‌شان بریده و نقطه تقاطع جایگزین می‌شود؛ تا پاک‌شدن کامل */
+function trimOffsetLoops(pts: Sample[]): Sample[] {
+  let cur = pts;
+  for (let pass = 0; pass < cur.length; pass++) {
+    let cut = false;
+    for (let i = 0; i < cur.length - 1 && !cut; i++) {
+      const a1 = cur[i], a2 = cur[i + 1];
+      const az0 = Math.min(a1.z, a2.z), az1 = Math.max(a1.z, a2.z);
+      const ar0 = Math.min(a1.r, a2.r), ar1 = Math.max(a1.r, a2.r);
+      for (let j = i + 2; j < cur.length - 1; j++) {
+        const b1 = cur[j], b2 = cur[j + 1];
+        if (Math.min(b1.z, b2.z) > az1 + 1e-9 || Math.max(b1.z, b2.z) < az0 - 1e-9) continue;
+        if (Math.min(b1.r, b2.r) > ar1 + 1e-9 || Math.max(b1.r, b2.r) < ar0 - 1e-9) continue;
+        const P = segCross(a1, a2, b1, b2);
+        if (P) { cur = [...cur.slice(0, i + 1), P, ...cur.slice(j + 1)]; cut = true; break; }
+      }
+    }
+    if (!cut) return cur;
+  }
+  return cur;
 }
 
 export type SegKind = "rapid" | "round" | "face" | "rough" | "roughz" | "copy" | "offset" | "finish" | "bore" | "borefin" | "bottom";
