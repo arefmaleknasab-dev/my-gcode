@@ -504,6 +504,9 @@ export default function ControlsPanel({
           <Num label="دور دوک" unit="rpm" value={params.rpm} min={200} max={4000} step={100} onChange={(v) => onParams({ rpm: v })} />
           <Num label="فاصله امن" unit="mm" value={params.safety} min={1} max={20} step={1} onChange={(v) => onParams({ safety: v })} />
         </div>
+        <p className="mt-1.5 rounded-md bg-bg/50 px-2 py-1 text-[9.5px] leading-4 text-dim">
+          فاصله امن، حداقل فاصله همه جابه‌جایی‌های سریع (G0) است: بیرون ‎+Y‎ از خط خارجی و بیرون ‎+X‎ از خط داخلی.
+        </p>
         <div className="mt-2">
           <span className="mb-1 block text-[10.5px] font-semibold text-mute">روش خشن‌تراشی</span>
           <div className="flex overflow-hidden rounded-md border border-edge" dir="ltr">
@@ -564,7 +567,7 @@ export default function ControlsPanel({
             <p className="mt-1 text-[9.5px] leading-4 text-dim">
               {params.ramp
                 ? "ابزار بین لایه‌های درون هر ناحیه مستقیم و با حرکت برشی (Ramp) به خط بعد فرور می‌رود — هیچ جابه‌جایی سریع G0 در میان نیست"
-                : "بین لایه‌های درون هر ناحیه با حداقل جابه‌جایی سریع (G0) و جمع‌کردن ۰٫۲ میلی‌متری به خط بعد می‌رود"}
+                : "بین لایه‌های درون هر ناحیه با جابه‌جایی سریع (G0) و حداقل فاصله امن به خط بعد می‌رود"}
             </p>
           </div>
         )}

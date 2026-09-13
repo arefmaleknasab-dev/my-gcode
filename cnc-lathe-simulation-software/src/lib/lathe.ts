@@ -724,7 +724,11 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
 
   /* صفحهٔ جمع‌کردن باید خارج از پوشش دورانی باشد — برای مقاطع غیر دایره‌ای      */
   /* موادِ در حال چرخش تا قطر محیطی گسترده‌اند، نه فقط قطر واقعی.                */
-  const envMaxRotD = rotationalEnvelope(p.blankD, p.blankShape).maxRotD;
+  const envRot = rotationalEnvelope(p.blankD, p.blankShape);
+  const envMaxRotD = envRot.maxRotD;
+  /* تا وقتی گوشه‌های مقطع چندضلعی گرد نشده‌اند، همه جابه‌جایی‌ها باید بیرون از */
+  /* پوشش دورانی (دورترین گوشه) بمانند — نه فقط بیرون قطر واقعی.               */
+  let cornersCleared = !envRot.hasCorners;
   const home = { x: envMaxRotD + 20, z: p.blankL + 10 };
   const retractX = envMaxRotD + 2 * p.safety;
   let cur = { ...home };
@@ -789,7 +793,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
   /* شبیه‌ساز، شعاع باقی‌ماندهٔ قطعه پس از هر برش به‌روز می‌شود تا شعاعِ عبورِ طولی  */
   /* همیشه بالاتر از موادِ موجود باشد.                                             */
   const NG = 600;
-  const physR = new Float64Array(NG + 1).fill(R);
+  const physR = new Float64Array(NG + 1).fill(envRot.outR);
   const physCut = (a: number, b: number, r: number) => {
     const i0 = Math.max(0, Math.round((Math.min(a, b) / p.blankL) * NG));
     const i1 = Math.min(NG, Math.round((Math.max(a, b) / p.blankL) * NG));
@@ -802,7 +806,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
     const i1 = Math.min(NG, Math.round((hi / p.blankL) * NG));
     let mx = 0;
     for (let i = i0; i <= i1; i++) if (physR[i] > mx) mx = physR[i];
-    return mx + 0.2; // حاشیهٔ امن
+    return mx + p.safety; // حداقل فاصله امن (پارامتر فاصله امن) بالای مواد
   };
 
   const radiusAt = (z: number): number => {
@@ -896,6 +900,8 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
             atZ = endZ;
             dir = dir === 1 ? -1 : 1;
           }
+          cornersCleared = true;
+          physR.fill(R); // گوشه‌ها برداشته شد — سطح مبنا از این پس قطر واقعی است
           note(`ROUND DONE AT X${f2(2 * R)} (${shName})`);
           mv(0, retractX, atZ, 0, "rapid"); // جمع‌کردن پایانی
         }
@@ -907,7 +913,8 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         if (!hasOuter) break;
         if (R - r0 > 0.05) {
           note("FACING");
-          mv(0, p.blankD, z0, 0, "face");
+          /* نزدیک‌شدن در ارتفاع امن (بیرون پوشش دورانی + فاصله امن)، سپس فرورفتن با فیدر */
+          mv(0, retractX, z0, 0, "face");
           mv(1, 2 * r0, z0, p.feedRough * 0.8, "face");
           mv(0, retractX, z0, 0, "rapid");
         }
@@ -968,10 +975,11 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
                   mv(0, retractX, startZ, 0, "rapid"); // موقعیت‌یابی اولیه
                   first = false;
                 } else {
-                  /* عبور امن از ناحیهٔ تمام‌شدهٔ بین دو بازه — کوتاه و کمی بالاتر از پروفایل */
+                  /* عبور امن از ناحیهٔ تمام‌شدهٔ بین دو بازه — با حداقل فاصله امن (+Y)   */
+                  /* بالای خط آفست؛ اگر گوشه‌ها هنوز گرد نشده‌اند، بیرون پوشش دورانی. */
                   const loZ = Math.min(lastEndZ, startZ);
                   const hiZ = Math.max(lastEndZ, startZ);
-                  const clearR = maxFIn(loZ, hiZ) + Math.max(0.5, p.safety * 0.5);
+                  const clearR = Math.max(maxFIn(loZ, hiZ) + p.safety, cornersCleared ? 0 : envRot.outR + p.safety);
                   const travelR = Math.max(lastEndR, clearR);
                   if (travelR > lastEndR + 1e-6) rawRapid(2 * travelR, lastEndZ);
                   rawRapid(2 * travelR, startZ);
@@ -1094,7 +1102,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
             /* اولین برش — جابه‌جایی امن از موقعیت فعلی (خانه یا پایان عملیات قبل) */
             mv(0, retractX, startZ, 0, "rapid");
           } else if (!rampOk) {
-            /* جابه‌جایی با حداقل جمع‌کردن: شعاع عبور باید بالای تمام موادِ مسیر باشد */
+            /* جابه‌جایی امن: شعاع عبور با حداقل فاصله امن بالای تمام موادِ مسیر است */
             const safeR = minSafeRadius(curZ, startZ);
             const travelR = Math.max(curR, safeR);
             if (travelR > curR + 1e-6) rawRapid(2 * travelR, curZ); // جمع شعاعیِ جزئی (در صورت نیاز)
@@ -1187,22 +1195,25 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         depths.push(zBot);
         note(`INNER DEPTHS ${depths.length} x ${f2(step)} MM`);
         const rEntry = 0.6; // ورود در امتداد محور
+        /* صفحه امن ‎+X‎ بیرون از خط داخلی: همه جابه‌جایی‌های محوری از آن می‌گذرند */
+        const mouthX = Math.max(p.blankL, zRim) + p.safety;
         innerCleared = true;
         depths.forEach((zk, k) => {
           const target = Math.max(0.8, wallIn(zk) - OD);
           if (k === 0) {
-            mv(0, 2 * rEntry, p.blankL + p.safety, 0, "rapid"); // ورود از دهانه
+            mv(0, 2 * rEntry, mouthX, 0, "rapid"); // ورود از دهانه
             mv(1, 2 * rEntry, zk, p.feedRough * 0.8, "bore"); // نشست روی صفحه دهانه
           } else {
             rawRapid(2 * rEntry, depths[k - 1]); // بازگشت شعاعی در فضای خالی‌شده
-            mv(1, 2 * rEntry, zk, p.feedRough * 0.7, "bore"); // فرورفتن محوری کوتاه
+            rawRapid(2 * rEntry, mouthX); // خروج محوری به بیرون خط داخلی (+X امن)
+            mv(1, 2 * rEntry, zk, p.feedRough * 0.7, "bore"); // فرورفتن با فیدر تا عمق بعد
           }
           if (target > rEntry + 0.05) mv(1, 2 * target, zk, p.feedRough, "bore"); // روتراشی تا دیواره
         });
-        /* خروج از دهانه در امتداد محور */
+        /* خروج: بازگشت شعاعی در کف خالی‌شده، سپس خروج محوری به بیرون خط داخلی */
         rawRapid(2 * rEntry, depths[depths.length - 1]);
-        rawRapid(2 * rEntry, p.blankL + p.safety);
-        mv(0, retractX, p.blankL + p.safety, 0, "rapid");
+        rawRapid(2 * rEntry, mouthX);
+        mv(0, retractX, mouthX, 0, "rapid");
         break;
       }
       /* پرداخت داخل — دنبال‌کردن دیواره داخلی از کف تا دهانه با هلدر دوم */
@@ -1212,13 +1223,25 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         note(`INNER FINISH - BOWL WALL (HOLDER ${op.holder})`);
         const IW = innerSamples;
         const zBot = IW[0].z;
+        const zRimF = IW[IW.length - 1].z;
         const rEntry = 0.6;
-        mv(0, 2 * rEntry, p.blankL + p.safety, 0, "rapid"); // پشت دهانه
+        /* صفحه امن ‎+X‎ بیرون از خط داخلی */
+        const mouthX = Math.max(p.blankL, zRimF) + p.safety;
+        mv(0, 2 * rEntry, mouthX, 0, "rapid"); // پشت دهانه، بیرون خط داخلی
         if (innerCleared) rawRapid(2 * rEntry, zBot); // حفره خالی است — ورود سریع
         else mv(1, 2 * rEntry, zBot, p.feedRough * 0.6, "borefin"); // بدون خشن‌کاری: ورود با فیدر
         for (let i = 0; i < IW.length; i++) mv(1, 2 * IW[i].r, IW[i].z, p.feedFinish, "borefin");
-        rawRapid(2 * IW[IW.length - 1].r, p.blankL + p.safety); // خروج محوری از دهانه
-        mv(0, retractX, p.blankL + p.safety, 0, "rapid");
+        if (innerCleared) {
+          /* خروج سریع از حفره خالی: شعاعی به مرکز، سپس محوری به بیرون خط داخلی */
+          rawRapid(2 * rEntry, zRimF);
+          rawRapid(2 * rEntry, mouthX);
+        } else {
+          /* بدون خشن‌کاری حفره پر است: بازگشت با فیدر در شیار برش تا کف، سپس خروج */
+          for (let i = IW.length - 2; i >= 0; i--) mv(1, 2 * IW[i].r, IW[i].z, p.feedFinish, "borefin");
+          mv(1, 2 * rEntry, zBot, p.feedFinish, "borefin");
+          mv(1, 2 * rEntry, mouthX, p.feedRough * 0.6, "borefin");
+        }
+        mv(0, retractX, mouthX, 0, "rapid");
         break;
       }
       /* پرداخت نهایی روی خط اصلی طرح */
