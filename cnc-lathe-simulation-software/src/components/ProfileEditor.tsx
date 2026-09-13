@@ -1237,6 +1237,7 @@ export default function ProfileEditor({
     let curOpId = -2;
     let curHolder: 1 | 2 = 1;
     let curFan = -1; // گسترش G0 این ران (از جی‌کد) — تغییر آن ران را می‌شکافد
+    let curFanU = 0; // گسترش محوری این ران — تغییر آن هم ران را می‌شکافد (پله مورب پنهان)
     let pts: [number, number][] = [];
     const arrowHead = (x1: number, y1: number, x2: number, y2: number) => {
       const len = Math.hypot(x2 - x1, y2 - y1);
@@ -1255,7 +1256,7 @@ export default function ProfileEditor({
           for (let i = step; i < pts.length - 1; i += step) {
             arrows += arrowHead(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
           }
-        } else if (curFan > 0 && pts.length >= 2) {
+        } else if ((curFan > 0 || curFanU !== 0) && pts.length >= 2) {
           /* حرکت سریعِ گسترده‌شده در جی‌کد: پیکان جهت در انتها */
           const n = pts.length;
           arrows = arrowHead(pts[n - 2][0], pts[n - 2][1], pts[n - 1][0], pts[n - 1][1]);
@@ -1264,6 +1265,7 @@ export default function ProfileEditor({
       }
       curKind = null;
       curFan = -1;
+      curFanU = 0;
       pts = [];
     };
     for (const sg of gen.segs) {
@@ -1271,12 +1273,13 @@ export default function ProfileEditor({
       /* آفست نمایشی = همان گسترش جی‌کد (فقط قطر، فقط حرکت سریع) */
       const fan = kind === "rapid" ? sg.fan ?? 0 : 0;
       const fanU = kind === "rapid" ? sg.fanU ?? 0 : 0;
-      if (kind !== curKind || sg.opId !== curOpId || sg.holder !== curHolder || fan !== curFan) {
+      if (kind !== curKind || sg.opId !== curOpId || sg.holder !== curHolder || fan !== curFan || fanU !== curFanU) {
         flush();
         curKind = kind;
         curOpId = sg.opId;
         curHolder = sg.holder;
         curFan = fan;
+        curFanU = fanU;
         pts = [screenPt(cam, sg.z1 + fanU, (sg.x1 + fan) / 2)];
       }
       pts.push(screenPt(cam, sg.z2 + fanU, (sg.x2 + fan) / 2));
