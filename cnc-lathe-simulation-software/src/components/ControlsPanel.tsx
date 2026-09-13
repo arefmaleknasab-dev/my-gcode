@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BlankShape, Op, OpType, Params, PPoint, Preset, Sample, ToolHand, ToolSpec, ToolType } from "../lib/lathe";
 import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, findZones, holder2Machine, makeOps, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
 import { cn } from "../utils/cn";
@@ -21,7 +21,7 @@ interface Props {
   onNotify: (msg: string) => void;
 }
 
-export default function ControlsPanel({
+function ControlsPanel({
   params,
   onParams,
   points,
@@ -1360,3 +1360,6 @@ function Toggle({ label, on, onChange }: { label: string; on: boolean; onChange:
     </button>
   );
 }
+
+/* memo: والد هنگام پخش شبیه‌سازی با هر خط جی‌کد رندر می‌شود؛ این پنل فقط با تغییر params/preset بازرندر شود */
+export default memo(ControlsPanel);

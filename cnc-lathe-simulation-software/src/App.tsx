@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ControlsPanel from "./components/ControlsPanel";
 import GCodePanel from "./components/GCodePanel";
 import ProfileEditor, { type EdSettings } from "./components/ProfileEditor";
@@ -125,14 +125,18 @@ export default function App() {
     setHistVer((v) => v + 1);
   };
 
-  const showToast = (msg: string, kind: "ok" | "warn" = "ok") => {
+  const showToast = useCallback((msg: string, kind: "ok" | "warn" = "ok") => {
     setToast({ msg, kind });
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 2400);
-  };
+  }, []);
+
+  /* کال‌بک‌های پایدار: هویت ثابت تا فرزندهای memo هنگام تیک شبیه‌سازی بازرندر نشوند */
+  const onParamsCb = useCallback((patch: Partial<Params>) => setParams((p) => ({ ...p, ...patch })), []);
+  const onStrategyCb = useCallback((name: string) => showToast(`استراتژی «${name}» فعال شد`), [showToast]);
 
   /* تغییر اسکچ — با commit=false تغییر زنده (کشیدن) و با true ثبت در تاریخچه */
-  const onSketchChange = (next: SketchSeg[], commit: boolean) => {
+  const onSketchChange = useCallback((next: SketchSeg[], commit: boolean) => {
     if (commit) {
       past.current.push(commitRef.current ?? sketch);
       commitRef.current = null;
@@ -144,9 +148,9 @@ export default function App() {
     }
     setSketch(next);
     setHistVer((v) => v + 1);
-  };
+  }, [sketch]);
 
-  const applyPreset = (p: Preset) => {
+  const applyPreset = useCallback((p: Preset) => {
     if (p.wall) {
       /* کاسه: دیواره به ترتیب مسیر (خارج ← لبه ← داخل) ساخته می‌شود */
       onSketchChange(
@@ -175,10 +179,10 @@ export default function App() {
         ? `پیش‌تنظیم «${p.name}» + استراتژی داخل/خارج فعال شد`
         : `پیش‌تنظیم «${p.name}» اعمال شد`
     );
-  };
+  }, [onSketchChange, showToast]);
 
   /* قرار دادن خودکار نقطه Split روی لبه (بیشترین X زنجیره) */
-  const autoSplit = () => {
+  const autoSplit = useCallback(() => {
     const poly = chainPolyline(orderChain(sketch));
     const auto = autoSplitPoint(poly);
     if (auto) {
@@ -187,7 +191,7 @@ export default function App() {
     } else {
       showToast("زنجیره پروفیل برای Split خودکار کافی نیست", "warn");
     }
-  };
+  }, [sketch, showToast]);
 
   const copyGCode = async () => {
     const text = gen.lines.join("\n");
@@ -272,14 +276,14 @@ export default function App() {
         <aside className="order-2 w-full shrink-0 lg:order-1 lg:w-[272px]">
           <ControlsPanel
             params={params}
-            onParams={(patch) => setParams((p) => ({ ...p, ...patch }))}
+            onParams={onParamsCb}
             points={points}
             innerPoints={innerPoints}
             splitInfo={splitInfo}
             onAutoSplit={autoSplit}
             activePreset={activePreset}
             onApplyPreset={applyPreset}
-            onStrategy={(name) => showToast(`استراتژی «${name}» فعال شد`)}
+            onStrategy={onStrategyCb}
             isolatedOpId={isolatedOpId}
             onIsolate={setIsolatedOpId}
             onNotify={showToast}

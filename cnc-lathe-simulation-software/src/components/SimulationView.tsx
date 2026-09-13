@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { GenResult, Params, ToolProfile } from "../lib/lathe";
 import { RAPID_RATE, rotationalEnvelope, toolProfile } from "../lib/lathe";
 import { cn } from "../utils/cn";
@@ -58,7 +58,7 @@ const KIND_CLS: Record<string, string> = {
   borefin: "text-[#f72585] border-[#f72585]/50",
 };
 
-export default function SimulationView({ gen, params, onActiveLine }: Props) {
+function SimulationView({ gen, params, onActiveLine }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -808,3 +808,6 @@ export default function SimulationView({ gen, params, onActiveLine }: Props) {
     </div>
   );
 }
+
+/* memo: حلقه پخش روی refهاست؛ رندر مجدد والد (هایلایت خط) این ویو را بازرندر نکند */
+export default memo(SimulationView);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import type { GenResult } from "../lib/lathe";
 import { fmtTime } from "../lib/lathe";
 import { cn } from "../utils/cn";
@@ -35,6 +35,22 @@ function tokenize(line: string) {
   if (last < line.length) parts.push({ text: line.slice(last), cls: "" });
   return parts;
 }
+
+
+interface RowProps { ln: number; parts: { text: string; cls: string }[]; active: boolean }
+/* سطر memo: هنگام پخش شبیه‌سازی فقط ۲ سطر (قبلی/فعلی) بازرندر می‌شوند نه ~۱۶۰۰ سطر */
+const GCodeLine = memo(function GCodeLine({ ln, parts, active }: RowProps) {
+  return (
+    <div data-ln={ln} className={cn("gc-line", active && "border-brass bg-brass/10")} style={{ textAlign: "left" }}>
+      <span className="mr-2 inline-block w-7 select-none text-right text-[10px] text-dim">{ln + 1}</span>
+      {parts.map((t, j) => (
+        <span key={j} className={t.cls}>
+          {t.text}
+        </span>
+      ))}
+    </div>
+  );
+});
 
 export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -85,19 +101,7 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
 
       <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto py-1.5" dir="ltr">
         {highlighted.map((parts, i) => (
-          <div
-            key={i}
-            data-ln={i}
-            className={cn("gc-line", i === activeLine && "border-brass bg-brass/10")}
-            style={{ textAlign: "left" }}
-          >
-            <span className="mr-2 inline-block w-7 select-none text-right text-[10px] text-dim">{i + 1}</span>
-            {parts.map((p, j) => (
-              <span key={j} className={p.cls}>
-                {p.text}
-              </span>
-            ))}
-          </div>
+          <GCodeLine key={i} ln={i} parts={parts} active={i === activeLine} />
         ))}
       </div>
 
