@@ -44,6 +44,7 @@ const KIND_FA: Record<string, string> = {
   offset: "آفست",
   bore: "خشن داخل (H2)",
   borefin: "پرداخت داخل (H2)",
+  bottom: "کف‌تراشی (H2)",
 };
 const KIND_CLS: Record<string, string> = {
   rapid: "text-steel border-steel/40",
@@ -56,6 +57,7 @@ const KIND_CLS: Record<string, string> = {
   offset: "text-[#f59a80] border-[#f59a80]/50",
   bore: "text-[#4cc9f0] border-[#4cc9f0]/50",
   borefin: "text-[#f72585] border-[#f72585]/50",
+  bottom: "text-[#ffd166] border-[#ffd166]/50",
 };
 
 function SimulationView({ gen, params, onActiveLine }: Props) {

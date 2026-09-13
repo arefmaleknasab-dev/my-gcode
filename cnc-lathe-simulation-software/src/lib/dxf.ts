@@ -18,6 +18,7 @@ const ACI: Record<OpType, number> = {
   finish: 30, // نارنجی — پرداخت
   "inner-rough": 6, // سرخابی — خشن داخل
   "inner-finish": 96, // آبی روشن — پرداخت داخل
+  bottom: 7, // سفید — کف‌تراشی
 };
 
 interface DxfLayer {

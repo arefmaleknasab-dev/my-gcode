@@ -54,6 +54,7 @@ export default function App() {
       showBore: s?.showBore ?? true,
       showRound: s?.showRound ?? true,
       showFace: s?.showFace ?? true,
+      showBottom: s?.showBottom ?? true,
       showRapids: s?.showRapids ?? true,
       showGhost: s?.showGhost ?? true,
     };

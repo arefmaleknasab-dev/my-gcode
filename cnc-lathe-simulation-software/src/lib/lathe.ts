@@ -302,7 +302,7 @@ let opUid = 1;
 
 /** گروه‌بندی عملیات برای انتخاب سریع «داخل / خارج / هردو» */
 export const OUTER_OPS: OpType[] = ["round", "face", "rough-d", "rough-z", "copy", "offset", "finish"];
-export const INNER_OPS: OpType[] = ["inner-rough", "inner-finish"];
+export const INNER_OPS: OpType[] = ["inner-rough", "inner-finish", "bottom"];
 
 /** هلدر پیش‌فرض هر عملیات: داخل‌تراشی با هلدر دوم، بقیه با هلدر اول */
 export const DEFAULT_HOLDER: Record<OpType, 1 | 2> = {
@@ -315,6 +315,7 @@ export const DEFAULT_HOLDER: Record<OpType, 1 | 2> = {
   finish: 1,
   "inner-rough": 2,
   "inner-finish": 2,
+  bottom: 2,
 };
 
 export const DEFAULT_PARAMS: Params = {
@@ -401,11 +402,11 @@ export interface Sample {
   r: number;
 }
 
-export type SegKind = "rapid" | "round" | "face" | "rough" | "roughz" | "copy" | "offset" | "finish" | "bore" | "borefin";
+export type SegKind = "rapid" | "round" | "face" | "rough" | "roughz" | "copy" | "offset" | "finish" | "bore" | "borefin" | "bottom";
 
 /* ---------------- عملیات و استراتژی‌های تراش ---------------- */
 
-export type OpType = "round" | "face" | "rough-d" | "rough-z" | "copy" | "offset" | "finish" | "inner-rough" | "inner-finish";
+export type OpType = "round" | "face" | "rough-d" | "rough-z" | "copy" | "offset" | "finish" | "inner-rough" | "inner-finish" | "bottom";
 
 export interface Op {
   id: number;
@@ -424,9 +425,10 @@ export const OP_INFO: Record<OpType, { name: string; desc: string; color: string
   finish: { name: "پرداخت نهایی", desc: "حرکت دقیق روی خط اصلی طرح", color: "#e0703c" },
   "inner-rough": { name: "خشن داخل (کاسه)", desc: "خالی‌کردن داخل کاسه با هلدر دوم", color: "#4cc9f0" },
   "inner-finish": { name: "پرداخت داخل", desc: "پرداخت دیواره داخلی با هلدر دوم", color: "#f72585" },
+  bottom: { name: "کف‌تراشی", desc: "برداشت طول اضافی خام پشت صفحه دهانه با هلدر داخل‌تراشی", color: "#ffd166" },
 };
 
-export const ALL_OP_TYPES: OpType[] = ["round", "face", "rough-d", "rough-z", "copy", "offset", "finish", "inner-rough", "inner-finish"];
+export const ALL_OP_TYPES: OpType[] = ["round", "face", "rough-d", "rough-z", "copy", "offset", "finish", "inner-rough", "inner-finish", "bottom"];
 
 export interface Strategy {
   id: string;
@@ -438,7 +440,7 @@ export const STRATEGIES: Strategy[] = [
   { id: "g71", name: "استاندارد شعاعی", types: ["round", "rough-d", "offset", "finish"] },
   { id: "g72", name: "محوری پله‌ای", types: ["round", "rough-z", "offset", "finish"] },
   { id: "copy", name: "کپی‌تراشی", types: ["round", "copy", "offset", "finish"] },
-  { id: "bowl", name: "کاسه داخل+خارج", types: ["round", "face", "rough-d", "inner-rough", "offset", "finish", "inner-finish"] },
+  { id: "bowl", name: "کاسه داخل+خارج", types: ["round", "face", "rough-d", "bottom", "inner-rough", "offset", "finish", "inner-finish"] },
 ];
 
 export function makeOps(types: OpType[]): Op[] {
@@ -921,6 +923,29 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
           mv(0, retractX, z0, 0, "face");
           mv(1, 2 * r0, z0, p.feedRough * 0.8, "face");
           mv(0, retractX, z0, 0, "rapid");
+        }
+        break;
+      }
+      /* کف‌تراشی — برداشت طول اضافی خام پشت صفحه دهانه (بین انتهای طرح و
+         انتهای خام) با هلدر داخل‌تراشی؛ اگر خام بلندتر از طرح نباشد بی‌اثر
+         است. هر گذر یک صفحه کامل از بیرون قطر تا نزدیک مرکز می‌تراشد. */
+      case "bottom": {
+        curOp = "bottom";
+        if (!hasOuter) break;
+        const excess = p.blankL - zEnd;
+        if (excess > 0.05) {
+          note(`BOTTOM FACING - EXCESS ${f2(excess)} (HOLDER ${op.holder})`);
+          /* شروع بیرون پوشش دورانی (اگر گوشه‌ها هنوز گرد نشده‌اند) وگرنه بیرون قطر خام */
+          const xStart = cornersCleared ? 2 * (R + p.safety) : 2 * (envRot.outR + p.safety);
+          const xEnd = 1.2; // تا نزدیک مرکز (مثل ورود بور)
+          const N = Math.max(1, Math.ceil(excess / p.doc - 1e-9));
+          for (let k = 1; k <= N; k++) {
+            const zk = k === N ? zEnd : p.blankL - k * p.doc;
+            mv(0, xStart, zk, 0, "rapid"); // موقعیت‌یابی امن در سطح بعد
+            mv(1, xEnd, zk, p.feedRough * 0.8, "bottom"); // کف‌تراشی تا مرکز
+          }
+          mv(0, retractX, zEnd, 0, "rapid"); // جمع‌کردن پایانی
+          physCut(zEnd, p.blankL, 0); // طول اضافی کاملاً برداشته شد
         }
         break;
       }

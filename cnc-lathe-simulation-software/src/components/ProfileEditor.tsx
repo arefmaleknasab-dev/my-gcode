@@ -57,6 +57,7 @@ export interface EdSettings {
   showBore: boolean;
   showRound: boolean;
   showFace: boolean;
+  showBottom: boolean;
   showRapids: boolean;
   showGhost: boolean;
 }
@@ -120,9 +121,10 @@ const SEG_COLOR: Record<SegKind, string> = {
   offset: "#f59a80",
   bore: "#4cc9f0",
   borefin: "#f72585",
+  bottom: "#ffd166",
 };
 
-type LayerKey = "showRough" | "showFinish" | "showOffset" | "showBore" | "showRound" | "showFace" | "showRapids" | "showGhost";
+type LayerKey = "showRough" | "showFinish" | "showOffset" | "showBore" | "showRound" | "showFace" | "showBottom" | "showRapids" | "showGhost";
 
 const CHIPS: { key: LayerKey; label: string; color: string }[] = [
   { key: "showRound", label: "گرد کردن", color: "#b48ee0" },
@@ -131,6 +133,7 @@ const CHIPS: { key: LayerKey; label: string; color: string }[] = [
   { key: "showOffset", label: "آفست", color: "#f59a80" },
   { key: "showFinish", label: "پرداخت", color: "#e0703c" },
   { key: "showFace", label: "پیشانی", color: "#e3a94e" },
+  { key: "showBottom", label: "کف‌تراشی", color: "#ffd166" },
   { key: "showRapids", label: "حرکت سریع", color: "#93a1ad" },
   { key: "showGhost", label: "سایه طرح", color: "#c9955a" },
 ];
@@ -146,6 +149,7 @@ const KIND_VISIBLE: Record<SegKind, LayerKey> = {
   offset: "showOffset",
   bore: "showBore",
   borefin: "showBore",
+  bottom: "showBottom",
 };
 
 const SNAP_STEPS = [1, 0.5, 5, 0];
