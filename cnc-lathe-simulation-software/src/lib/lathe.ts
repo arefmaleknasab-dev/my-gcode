@@ -1218,7 +1218,8 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
           }
           return IW[IW.length - 1].r;
         };
-        const step = Math.max(0.5, p.doc);
+        /* قدم محوری بور = قدم قطری خشن بیرون (‏۲×doc‏) تا هر دو «‏۳mm‏» یکی باشند */
+        const step = Math.max(0.5, 2 * p.doc);
         const depths: number[] = [];
         for (let z = zRim; z > zBot + 0.05; z -= step) depths.push(z);
         depths.push(zBot);
