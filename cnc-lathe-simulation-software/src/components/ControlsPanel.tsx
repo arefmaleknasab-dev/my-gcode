@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BlankShape, Op, OpType, Params, PPoint, Preset, Sample, ToolHand, ToolSpec, ToolType } from "../lib/lathe";
-import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, findZones, holder2Machine, makeOps, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
+import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, findZones, machineUV, makeOps, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
 import { cn } from "../utils/cn";
 import { IconBowl, IconCheck, IconCurve, IconEye, IconEyeOff, IconLayers, IconPlus, IconSpindle, IconSplit, IconTool, IconTrash } from "./icons";
 
@@ -52,7 +52,7 @@ function ControlsPanel({
     );
   const outerActive = params.ops.some((o) => o.on && OUTER_OPS.includes(o.type));
   const innerActive = params.ops.some((o) => o.on && INNER_OPS.includes(o.type));
-  const h2example = holder2Machine(80, 120, params.holder2);
+  const h2example = machineUV(80, 120, 2, params);
   const moveOp = (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (j < 0 || j >= params.ops.length) return;
@@ -259,12 +259,6 @@ function ControlsPanel({
               حرکت‌های سریعِ روی‌هم با گام ۳mm فقط به سمت بیرون باز می‌شوند تا در سیمکو جدا دیده شوند — فیدرها و برش عوض نمی‌شوند.
             </p>
           )}
-          <Toggle label="پست شعاعی (Y = شعاع، مثل پیش‌نمایش)" on={params.radiusPost} onChange={(v) => onParams({ radiusPost: v })} />
-          {params.radiusPost && (
-            <p className="px-0.5 text-[10.5px] leading-5 text-mute">
-              عددهای Y نصف می‌شوند تا با پیش‌نمایش یکی باشند — فقط وقتی روشن کنید که کنترلر/سیمکو شعاعی است، وگرنه قطعه نصف تراشیده می‌شود!
-            </p>
-          )}
         </div>
       </Section>
 
@@ -358,9 +352,9 @@ function ControlsPanel({
                 <Num label="Y Offset (−Y)" unit="mm" value={params.holder2.yOff} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, yOff: v } })} />
               </div>
               <p className="mt-1.5 rounded-md bg-bg/60 px-2 py-1 font-mono text-[9px] leading-4 text-mute" dir="ltr">
-                Xm = Xw + Xoff , Ym = Yw − Yoff
+                Xm = Xw + Xoff , Ym = Yw/2 − Yoff
                 <br />
-                ex: (80.0, 120.0) → ({h2example.x.toFixed(1)}, {h2example.y.toFixed(1)})
+                ex: (80.0, 120.0) → ({h2example.u.toFixed(1)}, {h2example.v.toFixed(1)})
               </p>
               <p className="mt-1 text-[9px] leading-4 text-dim">
                 هر آفست مستقیم روی محور خودش اثر می‌گذارد: X مثبت به سمت ‎+X‎ و Y مثبت به سمت ‎−Y‎. چرخش ‎−۹۰°‎ مربوط به جهت ابزار است. تبدیل فقط در جی‌کد اعمال می‌شود؛ شبیه‌سازی در مختصات قطعه است.
