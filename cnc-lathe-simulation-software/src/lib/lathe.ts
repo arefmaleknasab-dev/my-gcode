@@ -388,6 +388,34 @@ export interface Sample {
   r: number;
 }
 
+/* آفست نرمال واقعی (منحنی موازی): هر نمونه در جهت نرمال محلی به اندازه dist
+   جابه‌جا می‌شود؛ outward=true یعنی سمت بیرون پروفیل (خارج‌تراشی) وگرنه سمت
+   داخل (حفره). برخلاف r±OD شعاعی، فاصله عمودی از منحنی مرجع در تمام طول
+   ثابت می‌ماند. */
+export function normalOffset(pts: Sample[], dist: number, outward: boolean): Sample[] {
+  const n = pts.length;
+  if (n === 0) return [];
+  if (n === 1 || dist === 0) return pts.map((s) => ({ z: s.z, r: s.r }));
+  let zMin = Infinity, zMax = -Infinity;
+  for (const s of pts) { if (s.z < zMin) zMin = s.z; if (s.z > zMax) zMax = s.z; }
+  const zMid = (zMin + zMax) / 2;
+  const out: Sample[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    const tl = Math.hypot(b.z - a.z, b.r - a.r);
+    let nz: number, nr: number;
+    if (tl < 1e-9) { nz = 0; nr = 1; } // نمونه تکراری: شعاعی
+    else { const tz = (b.z - a.z) / tl, tr = (b.r - a.r) / tl; nz = -tr; nr = tz; }
+    if (Math.abs(nr) < 1e-9) {
+      // نرمال محوری (دیواره پیشانی): بیرون = دور از وسط پروفیل
+      const sgn = pts[i].z >= zMid ? 1 : -1;
+      nz = outward ? sgn : -sgn; nr = 0;
+    } else if (outward ? nr < 0 : nr > 0) { nz = -nz; nr = -nr; }
+    out[i] = { z: pts[i].z + dist * nz, r: pts[i].r + dist * nr };
+  }
+  return out;
+}
+
 export type SegKind = "rapid" | "round" | "face" | "rough" | "roughz" | "copy" | "offset" | "finish" | "bore" | "borefin" | "bottom";
 
 /* ---------------- عملیات و استراتژی‌های تراش ---------------- */
@@ -778,7 +806,8 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
 
   /* خط آفست — موازی با خط اصلی طرح در فاصلهٔ offsetDist (مرجع مراحل خشن) */
   const OD = Math.max(0, p.offsetDist);
-  const offSamples: Sample[] = samples.map((s) => ({ z: s.z, r: Math.min(R, s.r + OD) }));
+  /* خط آفست یکنواخت: آفست نرمال واقعی (نه r+OD شعاعی) + سقف قطر خام */
+  const offSamples: Sample[] = normalOffset(samples, OD, true).map((s) => ({ z: s.z, r: Math.min(R, s.r) }));
   const floorR = minR + OD;
 
   /* ردیابی سطحِ واقعی تراش‌خورده برای محاسبهٔ امنِ جابه‌جایی‌های زیگزاگ — همانند   */
@@ -1146,7 +1175,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         const stepZ = Math.max(0.5, p.doc);
         let nP = 0;
         for (let z = z0; z <= zEnd + 1e-6; z += stepZ) {
-          const target = radiusAt(z) + OD;
+          const target = offsetRadiusAt(z);
           if (target < R - 0.02) {
             if (nP === 0) note(`AXIAL STEP ${f2(stepZ)} MM`);
             nP++;
@@ -1192,17 +1221,19 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         const IW = innerSamples;
         const zBot = IW[0].z;
         const zRim = IW[IW.length - 1].z;
-        const wallIn = (z: number): number => {
-          if (z <= IW[0].z) return IW[0].r;
-          for (let i = 1; i < IW.length; i++) {
-            if (IW[i].z >= z) {
-              const a = IW[i - 1];
-              const b = IW[i];
+        /* خط آفست یکنواخت داخل: آفست نرمال به سمت حفره (نه wallIn−OD شعاعی) */
+        const innerOff = normalOffset(IW, OD, false);
+        const wallInOff = (z: number): number => {
+          if (z <= innerOff[0].z) return innerOff[0].r;
+          for (let i = 1; i < innerOff.length; i++) {
+            if (innerOff[i].z >= z) {
+              const a = innerOff[i - 1];
+              const b = innerOff[i];
               const t = (z - a.z) / Math.max(1e-9, b.z - a.z);
               return a.r + (b.r - a.r) * t;
             }
           }
-          return IW[IW.length - 1].r;
+          return innerOff[innerOff.length - 1].r;
         };
         const step = Math.max(0.5, p.doc);
         const depths: number[] = [];
@@ -1214,7 +1245,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         const mouthX = Math.max(p.blankL, zRim) + p.safety;
         innerCleared = true;
         depths.forEach((zk, k) => {
-          const target = Math.max(0.8, wallIn(zk) - OD);
+          const target = Math.max(0.8, wallInOff(zk));
           if (k === 0) {
             mv(0, 2 * rEntry, mouthX, 0, "rapid"); // ورود از دهانه
             mv(1, 2 * rEntry, zk, p.feedRough * 0.8, "bore"); // نشست روی صفحه دهانه
@@ -1286,11 +1317,11 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
              فرورفتن مورب کوتاه با فیدر — بدون فیدر طولانی روی صفحه تراش‌خورده */
           {
             const apX = Math.min(z0 + p.safety, zEnd);
-            const apR = Math.max(r0 + OD, offsetRadiusAt(apX)) + p.safety;
+            const apR = Math.max(offSamples[0].r, offsetRadiusAt(apX)) + p.safety;
             mv(0, 2 * apR, apX, 0, "rapid");
           }
-          mv(1, 2 * (r0 + OD), z0, p.feedFinish, "offset");
-          for (let i = 1; i < samples.length; i++) mv(1, 2 * (samples[i].r + OD), samples[i].z, p.feedFinish, "offset");
+          mv(1, 2 * offSamples[0].r, offSamples[0].z, p.feedFinish, "offset");
+          for (let i = 1; i < offSamples.length; i++) mv(1, 2 * offSamples[i].r, offSamples[i].z, p.feedFinish, "offset");
           mv(0, retractX, zEnd, 0, "rapid");
         }
         break;
