@@ -8,7 +8,6 @@ interface Props {
   gen: GenResult;
   activeLine: number;
   onCopy: () => void;
-  onCopyView: () => void;
   onDownload: () => void;
   badge?: string;
 }
@@ -56,7 +55,7 @@ const GCodeLine = memo(function GCodeLine({ ln, parts, active, top }: RowProps) 
   );
 });
 
-export default function GCodePanel({ gen, activeLine, onCopy, onCopyView, onDownload, badge }: Props) {
+export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const highlighted = useMemo(() => gen.lines.map((l) => tokenize(l)), [gen.lines]);
@@ -134,10 +133,6 @@ export default function GCodePanel({ gen, activeLine, onCopy, onCopyView, onDown
           <button className="btn !px-2 !py-1.5 text-[11.5px]" onClick={onCopy} title="کپی جی‌کد">
             <IconCopy className="h-3.5 w-3.5" />
             کپی
-          </button>
-          <button className="btn !px-2 !py-1.5 text-[11.5px]" onClick={onCopyView} title="کپی مختصات قطعه (بدون آفست هلدر) — فقط برای نمایش در سیمکو، نه اجرا روی دستگاه">
-            <IconCopy className="h-3.5 w-3.5" />
-            کپی سیمکو
           </button>
           <button className="btn btn-brass !px-2 !py-1.5 text-[11.5px]" onClick={onDownload} title="دانلود فایل NC">
             <IconDownload className="h-3.5 w-3.5" />
