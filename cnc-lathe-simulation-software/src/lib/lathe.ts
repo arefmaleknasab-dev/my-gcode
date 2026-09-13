@@ -1347,6 +1347,19 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
       if (Math.abs(b.u - a.u) >= 1e-9) return;
       const faceU = p.blankL + (sg.holder === 2 ? p.holder2.xOff : 0);
       if (a.u < faceU - 1e-9) return;
+      /* استثنای پله ورود/خروج (درخواست کاربر): شعاعیِ زنجیره ورود/خروج
+         (فیدر در فاصله ≤۲ سگمنت: پلانج/رترکت مستقیم یا کریدور دهانه پشت
+         فانل) و حرکات sys دقیقاً مثل قبل (TRUE) می‌مانند تا پله‌ها محوری
+         باشند؛ روی‌هم‌افتادن‌شان پذیرفته است */
+      if (sg.op === "sys") return;
+      for (let j = Math.max(0, i - 2); j <= Math.min(segs.length - 1, i + 2); j++) {
+        if (segs[j].motion === 1) return;
+      }
+      /* شعاعیِ چسبیده به تراورسِ گسترش‌یافته هم معاف است، وگرنه پله ورود/خروج
+         هم‌زمان Δu و Δv می‌گیرد و در CIMCO مورب دیده می‌شود (تراورس‌ها در پاس
+         قبلی fan گرفته‌اند پس این آزمون نهایی است) */
+      const nbFan = (j: number) => j >= 0 && j < segs.length && segs[j].motion === 0 && (segs[j].fan ?? 0) !== 0;
+      if (nbFan(i - 1) || nbFan(i + 1)) return;
       rad.push({ i, u: a.u });
     });
     rad.sort((p2, q) => p2.u - q.u || p2.i - q.i);
