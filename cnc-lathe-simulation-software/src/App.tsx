@@ -193,17 +193,44 @@ export default function App() {
     }
   }, [sketch, showToast]);
 
+  /* متن جی‌کد با پایان‌خط CRLF (سازگار با CIMCO/ویندوز و کنترلرها) */
+  const gcodeText = () => gen.lines.join("\r\n");
+
   const copyGCode = async () => {
-    const text = gen.lines.join("\n");
+    const text = gcodeText();
+    /* ۱) Clipboard API مدرن — روی http یا داخل iframe ممکن است در دسترس نباشد */
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast("جی‌کد در کلیپ‌بورد کپی شد");
+        return;
+      }
+    } catch {
+      /* ادامه به fallback */
+    }
+    /* ۲) fallback: textarea موقت + execCommand (روی http هم کار می‌کند) */
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-9999px";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (!ok) throw new Error("copy-failed");
       showToast("جی‌کد در کلیپ‌بورد کپی شد");
     } catch {
       showToast("کپی ممکن نشد — فایل را دانلود کنید", "warn");
     }
   };
   const downloadGCode = () => {
-    const blob = new Blob([gen.lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([gcodeText()], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

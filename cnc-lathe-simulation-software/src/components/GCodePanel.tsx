@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import type { GenResult } from "../lib/lathe";
 import { fmtTime } from "../lib/lathe";
 import { cn } from "../utils/cn";
@@ -93,6 +93,26 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
   const start = Math.max(0, Math.floor(view.top / ROW_H) - OVERSCAN);
   const end = Math.min(highlighted.length, Math.ceil((view.top + view.height) / ROW_H) + OVERSCAN);
 
+  /* کپی دستی: چون لیست مجازی است (فقط سطرهای داخل دید رندر می‌شوند)، اگر
+     انتخاب کاربر از اول تا آخر سطرهای نمایشی بود (مثل Ctrl+A)، کل برنامه —
+     نه فقط همان چند سطر — با پایان‌خط CRLF در کلیپ‌بورد گذاشته می‌شود.
+     انتخاب چند خط محدود، دست‌نخورده کپی می‌شود. */
+  const onCopyFull = (e: ClipboardEvent<HTMLDivElement>) => {
+    try {
+      const sel = window.getSelection();
+      const el = bodyRef.current;
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !el) return;
+      const first = el.querySelector(`[data-ln="${start}"]`);
+      const last = el.querySelector(`[data-ln="${end - 1}"]`);
+      if (first && last && sel.containsNode(first, true) && sel.containsNode(last, true)) {
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", gen.lines.join("\r\n"));
+      }
+    } catch {
+      /* ignore — کپی عادی انجام می‌شود */
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col rounded-lg border border-edge bg-panel">
       <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
@@ -129,7 +149,7 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
         <Stat label="عملیات خشن" value={String(gen.roughLayers)} />
       </div>
 
-      <div ref={bodyRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto" dir="ltr">
+      <div ref={bodyRef} onScroll={onScroll} onCopy={onCopyFull} className="min-h-0 flex-1 overflow-auto" dir="ltr">
         <div style={{ height: highlighted.length * ROW_H, position: "relative" }}>
           {highlighted.slice(start, end).map((parts, k) => (
             <GCodeLine key={start + k} ln={start + k} parts={parts} active={start + k === activeLine} top={(start + k) * ROW_H} />
