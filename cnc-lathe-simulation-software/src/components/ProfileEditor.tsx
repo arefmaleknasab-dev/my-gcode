@@ -1270,15 +1270,16 @@ export default function ProfileEditor({
       const kind: SegKind = sg.motion === 0 ? "rapid" : sg.kind;
       /* آفست نمایشی = همان گسترش جی‌کد (فقط قطر، فقط حرکت سریع) */
       const fan = kind === "rapid" ? sg.fan ?? 0 : 0;
+      const fanU = kind === "rapid" ? sg.fanU ?? 0 : 0;
       if (kind !== curKind || sg.opId !== curOpId || sg.holder !== curHolder || fan !== curFan) {
         flush();
         curKind = kind;
         curOpId = sg.opId;
         curHolder = sg.holder;
         curFan = fan;
-        pts = [screenPt(cam, sg.z1, (sg.x1 + fan) / 2)];
+        pts = [screenPt(cam, sg.z1 + fanU, (sg.x1 + fan) / 2)];
       }
-      pts.push(screenPt(cam, sg.z2, (sg.x2 + fan) / 2));
+      pts.push(screenPt(cam, sg.z2 + fanU, (sg.x2 + fan) / 2));
     }
     flush();
     return out;

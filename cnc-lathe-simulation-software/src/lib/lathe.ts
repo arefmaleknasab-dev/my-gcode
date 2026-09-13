@@ -494,6 +494,7 @@ export interface Seg {
   holder: 1 | 2; // هلدر مجری — مختصات هلدر ۲ در پس‌پردازنده تبدیل می‌شود
   note?: string[]; // کامنت‌های قبل از این حرکت (فقط فرمت استاندارد)
   fan?: number; // گسترش G0 این حرکت در جی‌کد (+قطر، فقط حرکت سریع طولی در/بالای رترکت؛ پیش‌فرض ۰)
+  fanU?: number; // گسترش G0 در راستای محور (+طول، فقط بیرون قطعه یا رانش داخل‌خط تراورس؛ پیش‌فرض ۰)
 }
 
 export interface GenResult {
@@ -1228,8 +1229,9 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         const zBot = IW[0].z;
         const zRimF = IW[IW.length - 1].z;
         const rEntry = 0.6;
-        /* صفحه امن ‎+X‎ بیرون از خط داخلی */
-        const mouthX = Math.max(p.blankL, zRimF) + p.safety;
+        /* صفحه امن ‎+X‎ بیرون از خط داخلی (با گسترش G0 سه میلی‌متر بیرون‌تر
+           تا ورود/خروج پرداخت روی خشن نیفتد — بیرون‌تر = امن‌تر) */
+        const mouthX = Math.max(p.blankL, zRimF) + p.safety + (p.spreadG0 ? 3 : 0);
         mv(0, 2 * rEntry, mouthX, 0, "rapid"); // پشت دهانه، بیرون خط داخلی
         if (innerCleared) rawRapid(2 * rEntry, zBot); // حفره خالی است — ورود سریع
         else mv(1, 2 * rEntry, zBot, p.feedRough * 0.6, "borefin"); // بدون خشن‌کاری: ورود با فیدر
@@ -1253,9 +1255,10 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         if (!hasOuter) break;
         note("FINISHING - MAIN PROFILE");
         /* ورود کوتاه: سریع تا بالای نقطه شروع (جلوتر از صفحه پیشانی، بیرون از
-           خط آفست با فاصله امن کامل)، سپس فرورفتن مورب کوتاه با فیدر */
+           خط آفست با فاصله امن کامل)، سپس فرورفتن مورب کوتاه با فیدر.
+           با گسترش G0 صفحه ورود ۳mm جلوتر است تا روی ورود آفست نیفتد. */
         {
-          const apX = Math.min(z0 + p.safety, zEnd);
+          const apX = Math.min(z0 + p.safety + (p.spreadG0 ? 3 : 0), zEnd);
           const apR = Math.max(r0, radiusAt(apX)) + OD + p.safety;
           mv(0, 2 * apR, apX, 0, "rapid");
         }
@@ -1292,10 +1295,11 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
   mv(0, retractX, p.blankL + 2 * p.safety, 0, "rapid");
   mv(0, home.x, home.z, 0, "rapid");
 
-  /* گسترش G0 در جی‌کد: حرکت‌های سریعِ طولیِ روی‌هم (در/بالای ارتفاع رترکت)
-     با گام ۳mm فقط به سمت بیرون (+قطر، سقف ۳۰) باز می‌شوند تا در سیمکو جدا
-     دیده شوند. فیدرها، حرکات شعاعی، پله‌های پل و حرکات داخل حفره/نزدیک قطعه
-     دست‌نخورده می‌مانند — پس برش و ایمنی عوض نمی‌شود. */
+  /* گسترش G0 در جی‌کد (همه‌جهته): حرکت‌های سریعِ طولیِ روی‌هم با گام ۳mm فقط
+     به سمت بیرون (+قطر، ‎(k+1)*3‎، سقف ۳۳) باز می‌شوند تا در سیمکو هیچ دو خط
+     G0 روی هم نیفتد؛ H1 همه، H2 فقط بیرون قطعه (در/بالای رترکت پست‌شده).
+     فقط گروه‌های چندعضوی باز می‌شوند (تک‌خط‌ها سر جای واقعی می‌مانند).
+     فیدرها، حرکات شعاعی/مورب، پله‌های پل و حرکات داخل حفره دست‌نخورده‌اند. */
   if (p.spreadG0) {
     const groups = new Map<string, number[]>();
     segs.forEach((s, i) => {
@@ -1303,19 +1307,59 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
       const a = machineUV(s.z1, s.x1, s.holder, p);
       const b = machineUV(s.z2, s.x2, s.holder, p);
       if (Math.hypot(b.u - a.u, b.v - a.v) < 1e-9) return; // صفر
-      if (Math.abs(b.v - a.v) >= 1e-9) return; // فقط طولی
-      const lvl = s.holder === 2 ? retractX - p.holder2.yOff : retractX;
-      if (a.v < lvl - 1e-9) return; // فقط در/بالای رترکت
+      if (Math.abs(b.u - a.u) < 1e-9) return; // شعاعی/مورب: نه
+      if (Math.abs(b.v - a.v) >= 1e-9) return; // فقط طولیِ محوری
+      if (s.holder === 2 && a.v < retractX - p.holder2.yOff - 1e-9) return; // حفره: نه
       const key = b.v.toFixed(2);
       const arr = groups.get(key);
       if (arr) arr.push(i);
       else groups.set(key, [i]);
     });
     for (const arr of groups.values()) {
+      if (arr.length < 2) {
+        /* تک‌خط: ۳ واحد بیرون‌تر تا پله‌های ورود/خروج آن مورب شوند و روی هم
+           نیفتند؛ کریدور دهانه حفره (تنها گذر امن) دست‌نخورده می‌ماند */
+        if (arr.length === 1) {
+          const sg = segs[arr[0]];
+          const pa = machineUV(sg.z1, sg.x1, sg.holder, p);
+          const funnelV = 1.2 - (sg.holder === 2 ? p.holder2.yOff : 0);
+          if (Math.abs(pa.v - funnelV) >= 1.0) sg.fan = 3;
+        }
+        continue;
+      }
       arr.forEach((si, k) => {
-        if (k > 0) segs[si].fan = Math.min(k * 3, 30);
+        segs[si].fan = Math.min((k + 1) * 3, 33);
       });
     }
+    /* رانش داخل‌خط تراورس‌های بازشده: پله ورود مورب می‌شود (در راستای خود
+       تراورس، حداکثر ۳) تا پله‌های هم‌نقطه فقط نقطه شروع را مشترک داشته باشند */
+    segs.forEach((sg) => {
+      if (!sg.fan) return;
+      const a = machineUV(sg.z1, sg.x1, sg.holder, p);
+      const b = machineUV(sg.z2, sg.x2, sg.holder, p);
+      const du = b.u - a.u;
+      if (Math.abs(du) < 1e-9) return;
+      sg.fanU = Math.sign(du) * Math.min(3, Math.abs(du) / 2);
+    });
+    /* گسترش شعاعی‌های بیرون قطعه در راستای محور: ورود/خروج‌های روی‌هم‌خط
+       (دهانه، صفحه پیشانی) با رتبه سراسری (k+1)*3 جابه‌جا می‌شوند تا هیچ دو
+       خط اجراشده‌ای هم‌خط نماند (مرتب‌صعودی = خروجی اکیداً صعودی)؛
+       شعاعی‌های داخل قطعه (پاس‌های خشنه، حفره) دست‌نخورده‌اند */
+    const rad: { i: number; u: number }[] = [];
+    segs.forEach((sg, i) => {
+      if (sg.motion !== 0 || sg.fanU) return;
+      const a = machineUV(sg.z1, sg.x1, sg.holder, p);
+      const b = machineUV(sg.z2, sg.x2, sg.holder, p);
+      if (Math.hypot(b.u - a.u, b.v - a.v) < 1e-9) return;
+      if (Math.abs(b.u - a.u) >= 1e-9) return;
+      const faceU = p.blankL + (sg.holder === 2 ? p.holder2.xOff : 0);
+      if (a.u < faceU - 1e-9) return;
+      rad.push({ i, u: a.u });
+    });
+    rad.sort((p2, q) => p2.u - q.u || p2.i - q.i);
+    rad.forEach((e, k) => {
+      segs[e.i].fanU = (k + 1) * 3;
+    });
   }
 
   /* قالب‌بندی خروجی بر اساس سبک انتخابی */
@@ -1393,7 +1437,8 @@ export function machineUV(zw: number, xw: number, holder: 1 | 2, p: Params): { u
    پس‌پردازنده و پل‌ها همه با همین مختصات کار می‌کنند تا تداوم ماشین حفظ شود. */
 export function execUV(s: Seg, end: boolean, p: Params): { u: number; v: number } {
   const m = machineUV(end ? s.z2 : s.z1, end ? s.x2 : s.x1, s.holder, p);
-  return s.fan ? { u: m.u, v: m.v + s.fan } : m;
+  if (!s.fan && !s.fanU) return m;
+  return { u: m.u + (s.fanU ?? 0), v: m.v + (s.fan ?? 0) };
 }
 
 /* آستانه پرش: اگر نقطه پایان پست‌شده با نقطه شروع بعدی (در فضای ماشین)
@@ -1442,10 +1487,13 @@ export function planBridges(segs: Seg[], p: Params): {
   const tc = { u: maxU + p.safety, v: maxV + p.safety };
   const bridges: PlannedBridge[] = [];
   const jump = (a: { u: number; v: number }, b: { u: number; v: number }) => Math.hypot(a.u - b.u, a.v - b.v);
-  const legsFor = (a: { u: number; v: number }, b: { u: number; v: number }, absorb: boolean) => {
+  const legsFor = (a: { u: number; v: number }, b: { u: number; v: number }, absorb: boolean, tcu: number, rd: number) => {
+    /* پل جذب‌نشده با رمپ وارد می‌شود (از ۳×k_b بالاتر، دقیق روی شروع سگمنت)
+       تا تراورس‌های ورود پل‌ها روی هم نیفتند؛ پل جذب‌شده دست‌نخورده است */
+    const ty = absorb ? b.v : b.v + rd;
     const legs = [
-      { u: tc.u, v: a.v },
-      { u: tc.u, v: b.v },
+      { u: tcu, v: a.v + rd },
+      { u: tcu, v: ty },
       { u: b.u, v: b.v },
     ];
     return absorb ? legs.slice(0, 2) : legs;
@@ -1463,7 +1511,11 @@ export function planBridges(segs: Seg[], p: Params): {
   const mkBridge = (atIndex: number, fromH: 1 | 2, toH: 1 | 2, from: { u: number; v: number }) => {
     const b = starts[atIndex];
     const absorb = absorbable(atIndex);
-    bridges.push({ atIndex, fromH, toH, from, legs: legsFor(from, b, absorb), absorbed: absorb });
+    /* شماره پل k_b=bridges.length؛ با گسترش، کریدور هر پل k_b*3 جلوتر است تا
+       تراورس‌های پل‌ها روی هم نیفتند (پل اول k_b=0 دقیق = TRUE نما) */
+    const btcu = tc.u + (p.spreadG0 ? bridges.length * 3 : 0);
+    const rd = p.spreadG0 ? bridges.length * 3 : 0;
+    bridges.push({ atIndex, fromH, toH, from, legs: legsFor(from, b, absorb, btcu, rd), absorbed: absorb });
   };
   /* تشخیص ناپیوستگی روی مختصات پست‌شده (بدون گسترش): پل برای پرش قاب هلدر است؛
      اختلاف سطح گسترش (همان خط، چند میلی‌متر بالاتر) با پله محوری پوشش داده
@@ -1507,8 +1559,11 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
   const bridgeAt = new Map<number, PlannedBridge>();
   for (const b of plan.bridges) bridgeAt.set(b.atIndex, b);
   /* ردیابی موقعیت ماشین روی مختصات اجراشده (ماشین + گسترش G0) */
-  let mu = segs.length ? execUV(segs[0], false, p).u : plan.home.u;
-  let mv = segs.length ? execUV(segs[0], false, p).v : plan.home.v;
+  /* با گسترشِ روشن، شروعِ اجراشده سگمنت اول با خانه فرق دارد پس ردیابی از خانه
+     آغاز می‌شود تا پله خانه→شروع صادر شود؛ خاموش = رفتار legacy بایت‌به‌بایت */
+  const fromHome = p.spreadG0 || !segs.length;
+  let mu = fromHome ? plan.home.u : execUV(segs[0], false, p).u;
+  let mv = fromHome ? plan.home.v : execUV(segs[0], false, p).v;
   let lastFeed = -1;
   for (let i = 0; i < segs.length; i++) {
     const sg = segs[i];
