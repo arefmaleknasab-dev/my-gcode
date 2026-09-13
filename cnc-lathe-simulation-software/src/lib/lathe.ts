@@ -1653,7 +1653,7 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
 /* پیش‌نمایش نرم‌افزار: قطعه افقی، پروفایل بالای محور طول                   */
 
 function buildModalLines(segs: Seg[], p: Params): string[] {
-  const lines: string[] = ["%", "G90", "G49", `M3 S${Math.round(p.rpm)}`];
+  const lines: string[] = ["%", "G21 G40 G90", "G49", `M3 S${Math.round(p.rpm)}`];
   const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
   if (usesH2) {
     lines.push(`(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw+XOFF Ym=Yw-YOFF)`);

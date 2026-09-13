@@ -160,7 +160,7 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
       <div className="flex items-center justify-between border-t border-edge px-3 py-1.5 text-[10.5px] text-dim">
         <span>{gen.lines.length} خط • {gen.segs.length} حرکت</span>
         <span dir="ltr" className="font-mono">
-          {gen.format === "modal" ? "G90 • G49 • XY • X=L • Y=⌀ • M02" : "G21 • G18 • X/Z • X=⌀"}
+          {gen.format === "modal" ? "G21 • G40 • G90 • G49 • XY • X=L • Y=⌀ • M02" : "G21 • G18 • X/Z • X=⌀"}
         </span>
       </div>
     </div>
