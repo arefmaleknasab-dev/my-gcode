@@ -121,6 +121,7 @@ export interface Params {
   ops: Op[]; // زنجیره عملیات تراش (استراتژی)
   format: CodeFormat; // سبک خروجی جی‌کد
   spreadG0: boolean; // گسترش G0 در جی‌کد: حرکت‌های سریع روی‌هم با گام ۳mm فقط به سمت بیرون باز می‌شوند (فیدرها عوض نمی‌شوند)
+  radiusPost: boolean; // پست شعاعی: Y = شعاع (مثل پیش‌نمایش و DXF) به‌جای قطر
   split: SplitState; // نقطه تعیین‌کننده داخل/خارج (کاسه)
   holder2: Holder2State; // آفست‌های قابل تنظیم هلدر دوم
 }
@@ -338,6 +339,7 @@ export const DEFAULT_PARAMS: Params = {
   ops: makeOps(["round", "rough-d", "offset", "finish"]),
   format: "modal",
   spreadG0: false,
+  radiusPost: false,
   split: { ...DEFAULT_SPLIT },
   holder2: { ...DEFAULT_HOLDER2 },
 };
@@ -355,7 +357,7 @@ export function normalizeParams(
     holder2: { ...DEFAULT_HOLDER2 },
   };
   if (!raw) return base;
-  const keys: (keyof Params)[] = ["blankD", "blankL", "doc", "offsetDist", "feedRough", "feedFinish", "rpm", "safety", "lineNumbers", "ramp", "simpleFeed", "spreadG0"];
+  const keys: (keyof Params)[] = ["blankD", "blankL", "doc", "offsetDist", "feedRough", "feedFinish", "rpm", "safety", "lineNumbers", "ramp", "simpleFeed", "spreadG0", "radiusPost"];
   for (const k of keys) {
     const v = raw[k];
     if (typeof v === "number" && Number.isFinite(v)) (base[k] as number) = v as number;
@@ -743,6 +745,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
   let curHolder: 1 | 2 = 1;
   let notes: string[] = [];
   const note = (s: string) => notes.push(s);
+  const dispX = (r: number) => (p.radiusPost ? r : 2 * r); // عدد نمایشی کامنت‌ها در واحد فایل
 
   const pushSeg = (motion: 0 | 1, x: number, z: number, feed: number, kind: SegKind) => {
     segs.push({
@@ -899,7 +902,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
             const r = roundLayers[i];
             const startZ = dir === 1 ? 0 : p.blankL;
             const endZ = dir === 1 ? p.blankL : 0;
-            note(`ROUND LAYER X${f2(2 * r)}${dir === -1 ? " (RETURN)" : ""}`);
+            note(`ROUND LAYER X${f2(dispX(r))}${dir === -1 ? " (RETURN)" : ""}`);
             if (i === 0) mv(0, retractX, startZ, 0, "rapid"); // موقعیت‌یابی امن اولیه
             mv(1, 2 * r, startZ, p.feedRough * 0.7, "round"); // فرورفتن شعاعی
             if (Math.abs(endZ - startZ) > 0.01) mv(1, 2 * r, endZ, p.feedRough, "round"); // تراش طولی
@@ -908,7 +911,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
           }
           cornersCleared = true;
           physR.fill(R); // گوشه‌ها برداشته شد — سطح مبنا از این پس قطر واقعی است
-          note(`ROUND DONE AT X${f2(2 * R)} (${shName})`);
+          note(`ROUND DONE AT X${f2(dispX(R))} (${shName})`);
           mv(0, retractX, atZ, 0, "rapid"); // جمع‌کردن پایانی
         }
         break;
@@ -994,7 +997,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
               /* بازه‌های فعال این گذر: جایی که هنوز به برش نیاز است */
               const activeRaw = cutIntervals(F, prevLayer);
               if (!activeRaw.length) break;
-              note(`SERPENTINE PASS ${j}/${N} - X${f2(2 * layer)}${forward ? "" : " (RETURN)"}`);
+              note(`SERPENTINE PASS ${j}/${N} - X${f2(dispX(layer))}${forward ? "" : " (RETURN)"}`);
               /* گذرِ رفت چپ→راست و گذرِ برگشت راست→چپ؛ بازه‌ها هم در همان جهت طی می‌شوند */
               const active = forward ? activeRaw : [...activeRaw].reverse();
               for (const iv of active) {
@@ -1091,7 +1094,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
           for (const c of cuts) {
             if (c.r !== lastR) {
               nL++;
-              note(`LAYER ${nL} - X${f2(2 * c.r)}`);
+              note(`LAYER ${nL} - X${f2(dispX(c.r))}`);
               lastR = c.r;
             }
             mv(0, retractX, c.a, 0, "rapid");
@@ -1112,7 +1115,7 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         for (const c of cuts) {
           if (c.r !== lastR) {
             nL++;
-            note(`LAYER ${nL} - X${f2(2 * c.r)}`);
+            note(`LAYER ${nL} - X${f2(dispX(c.r))}`);
             lastR = c.r;
           }
           /* نزدیک‌ترین نقطهٔ ورود به مکان فعلی ابزار — برای اولین برش، موقعیت      */
@@ -1457,11 +1460,13 @@ function normFeed(sg: Seg, p: Params): number {
 /* مختصات ماشین یک نقطه (با تبدیل هلدر دوم) — فضای مشترک هر دو فرمت:
    u = محور طولی (modal X / std Z)، v = محور قطری (modal Y / std X) */
 export function machineUV(zw: number, xw: number, holder: 1 | 2, p: Params): { u: number; v: number } {
+  /* پست شعاعی: مقدار قطر نصف می‌شود (مثل پیش‌نمایش)؛ آفست‌ها واحد ماشین‌اند و دست نمی‌خورند */
   if (holder === 2) {
+    if (p.radiusPost) return { u: zw + p.holder2.xOff, v: xw / 2 - p.holder2.yOff };
     const m = holder2Machine(zw, xw, p.holder2);
     return { u: m.x, v: m.y };
   }
-  return { u: zw, v: xw };
+  return p.radiusPost ? { u: zw, v: xw / 2 } : { u: zw, v: xw };
 }
 
 /* مختصات اجراشده یک سر سگمنت = مختصات ماشین + گسترش G0 (اگر روشن باشد).
@@ -1512,12 +1517,15 @@ export function planBridges(segs: Seg[], p: Params): {
     if (ends[i].u > maxU) maxU = ends[i].u;
     if (ends[i].v > maxV) maxV = ends[i].v;
   }
-  const home = { u: p.blankL + 10, v: rotationalEnvelope(p.blankD, p.blankShape).maxRotD + 20 };
+  const homeV = rotationalEnvelope(p.blankD, p.blankShape).maxRotD + 20;
+  /* شعاعی: نصفِ مجموع (مساوی نقطه خانه استراتژی) تا پله اضافه نیاید */
+  const home = { u: p.blankL + 10, v: p.radiusPost ? homeV / 2 : homeV };
   if (home.u > maxU) maxU = home.u;
   if (home.v > maxV) maxV = home.v;
   const tc = { u: maxU + p.safety, v: maxV + p.safety };
   const bridges: PlannedBridge[] = [];
   const jump = (a: { u: number; v: number }, b: { u: number; v: number }) => Math.hypot(a.u - b.u, a.v - b.v);
+  const JMIN = p.radiusPost ? BRIDGE_MIN_JUMP / 2 : BRIDGE_MIN_JUMP; // آستانه هم‌ارز فیزیکی در واحد فایل
   const legsFor = (a: { u: number; v: number }, b: { u: number; v: number }, absorb: boolean, tcu: number, rd: number) => {
     /* پل جذب‌نشده با رمپ وارد می‌شود (از ۳×k_b بالاتر، دقیق روی شروع سگمنت)
        تا تراورس‌های ورود پل‌ها روی هم نیفتند؛ پل جذب‌شده دست‌نخورده است */
@@ -1553,13 +1561,13 @@ export function planBridges(segs: Seg[], p: Params): {
      می‌شود نه با پل. پله‌های پل روی مختصات اجراشده (با گسترش) می‌نشینند. */
   const pstart = (j: number) => machineUV(segs[j].z1, segs[j].x1, segs[j].holder, p);
   const pend = (j: number) => machineUV(segs[j].z2, segs[j].x2, segs[j].holder, p);
-  if (nz.length > 0 && jump(home, pstart(nz[0])) > BRIDGE_MIN_JUMP) {
+  if (nz.length > 0 && jump(home, pstart(nz[0])) > JMIN) {
     mkBridge(nz[0], 1, segs[nz[0]].holder, home);
   }
   for (let k = 1; k < nz.length; k++) {
     const i = nz[k];
     const pv = nz[k - 1];
-    if (jump(pend(pv), pstart(i)) > BRIDGE_MIN_JUMP) {
+    if (jump(pend(pv), pstart(i)) > JMIN) {
       mkBridge(i, segs[pv].holder, segs[i].holder, ends[pv]);
     }
   }
@@ -1583,9 +1591,10 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
   const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
   if (usesH2) {
     lines.push(`(HOLDER2: XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT})`);
-    lines.push(`(H2 MAP: Xm = Xw + XOFF , Ym = Yw - YOFF)`);
+    lines.push(p.radiusPost ? `(H2 MAP: Xm = Xw + XOFF , Ym = Yw/2 - YOFF) (RADIUS POST)` : `(H2 MAP: Xm = Xw + XOFF , Ym = Yw - YOFF)`);
   }
   emit("G21 G18 G40");
+  if (p.radiusPost) lines.push("(RADIUS POST: X = RADIUS, MATCHES PREVIEW)");
   const plan = planBridges(segs, p);
   const bridgeAt = new Map<number, PlannedBridge>();
   for (const b of plan.bridges) bridgeAt.set(b.atIndex, b);
@@ -1654,9 +1663,10 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
 
 function buildModalLines(segs: Seg[], p: Params): string[] {
   const lines: string[] = ["%", "G21 G40 G90", "G49", `M3 S${Math.round(p.rpm)}`];
+  if (p.radiusPost) lines.push("(RADIUS POST: Y = RADIUS, MATCHES PREVIEW)");
   const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
   if (usesH2) {
-    lines.push(`(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw+XOFF Ym=Yw-YOFF)`);
+    lines.push(p.radiusPost ? `(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw+XOFF Ym=Yw/2-YOFF) (RADIUS POST)` : `(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw+XOFF Ym=Yw-YOFF)`);
   }
   const f3 = (v: number) => v.toFixed(3);
   let mode: -1 | 0 | 1 = -1;

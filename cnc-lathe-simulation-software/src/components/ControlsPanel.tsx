@@ -259,6 +259,12 @@ function ControlsPanel({
               حرکت‌های سریعِ روی‌هم با گام ۳mm فقط به سمت بیرون باز می‌شوند تا در سیمکو جدا دیده شوند — فیدرها و برش عوض نمی‌شوند.
             </p>
           )}
+          <Toggle label="پست شعاعی (Y = شعاع، مثل پیش‌نمایش)" on={params.radiusPost} onChange={(v) => onParams({ radiusPost: v })} />
+          {params.radiusPost && (
+            <p className="px-0.5 text-[10.5px] leading-5 text-mute">
+              عددهای Y نصف می‌شوند تا با پیش‌نمایش یکی باشند — فقط وقتی روشن کنید که کنترلر/سیمکو شعاعی است، وگرنه قطعه نصف تراشیده می‌شود!
+            </p>
+          )}
         </div>
       </Section>
 
