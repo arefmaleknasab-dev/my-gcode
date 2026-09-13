@@ -120,6 +120,7 @@ export interface Params {
   lineNumbers: boolean;
   ops: Op[]; // زنجیره عملیات تراش (استراتژی)
   format: CodeFormat; // سبک خروجی جی‌کد
+  spreadG0: boolean; // گسترش G0 در جی‌کد: حرکت‌های سریع روی‌هم با گام ۳mm فقط به سمت بیرون باز می‌شوند (فیدرها عوض نمی‌شوند)
   split: SplitState; // نقطه تعیین‌کننده داخل/خارج (کاسه)
   holder2: Holder2State; // آفست‌های قابل تنظیم هلدر دوم
 }
@@ -335,6 +336,7 @@ export const DEFAULT_PARAMS: Params = {
   lineNumbers: true,
   ops: makeOps(["round", "rough-d", "offset", "finish"]),
   format: "modal",
+  spreadG0: false,
   split: { ...DEFAULT_SPLIT },
   holder2: { ...DEFAULT_HOLDER2 },
 };
@@ -352,7 +354,7 @@ export function normalizeParams(
     holder2: { ...DEFAULT_HOLDER2 },
   };
   if (!raw) return base;
-  const keys: (keyof Params)[] = ["blankD", "blankL", "doc", "offsetDist", "feedRough", "feedFinish", "rpm", "safety", "lineNumbers", "ramp", "simpleFeed"];
+  const keys: (keyof Params)[] = ["blankD", "blankL", "doc", "offsetDist", "feedRough", "feedFinish", "rpm", "safety", "lineNumbers", "ramp", "simpleFeed", "spreadG0"];
   for (const k of keys) {
     const v = raw[k];
     if (typeof v === "number" && Number.isFinite(v)) (base[k] as number) = v as number;
@@ -491,6 +493,7 @@ export interface Seg {
   opId: number; // شناسه نمونه عملیات (برای نمایش ایزوله و خروجی تفکیکی) — حرکات سیستمی: 1-
   holder: 1 | 2; // هلدر مجری — مختصات هلدر ۲ در پس‌پردازنده تبدیل می‌شود
   note?: string[]; // کامنت‌های قبل از این حرکت (فقط فرمت استاندارد)
+  fan?: number; // گسترش G0 این حرکت در جی‌کد (+قطر، فقط حرکت سریع طولی در/بالای رترکت؛ پیش‌فرض ۰)
 }
 
 export interface GenResult {
@@ -1289,6 +1292,32 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
   mv(0, retractX, p.blankL + 2 * p.safety, 0, "rapid");
   mv(0, home.x, home.z, 0, "rapid");
 
+  /* گسترش G0 در جی‌کد: حرکت‌های سریعِ طولیِ روی‌هم (در/بالای ارتفاع رترکت)
+     با گام ۳mm فقط به سمت بیرون (+قطر، سقف ۳۰) باز می‌شوند تا در سیمکو جدا
+     دیده شوند. فیدرها، حرکات شعاعی، پله‌های پل و حرکات داخل حفره/نزدیک قطعه
+     دست‌نخورده می‌مانند — پس برش و ایمنی عوض نمی‌شود. */
+  if (p.spreadG0) {
+    const groups = new Map<string, number[]>();
+    segs.forEach((s, i) => {
+      if (s.motion !== 0) return;
+      const a = machineUV(s.z1, s.x1, s.holder, p);
+      const b = machineUV(s.z2, s.x2, s.holder, p);
+      if (Math.hypot(b.u - a.u, b.v - a.v) < 1e-9) return; // صفر
+      if (Math.abs(b.v - a.v) >= 1e-9) return; // فقط طولی
+      const lvl = s.holder === 2 ? retractX - p.holder2.yOff : retractX;
+      if (a.v < lvl - 1e-9) return; // فقط در/بالای رترکت
+      const key = b.v.toFixed(2);
+      const arr = groups.get(key);
+      if (arr) arr.push(i);
+      else groups.set(key, [i]);
+    });
+    for (const arr of groups.values()) {
+      arr.forEach((si, k) => {
+        if (k > 0) segs[si].fan = Math.min(k * 3, 30);
+      });
+    }
+  }
+
   /* قالب‌بندی خروجی بر اساس سبک انتخابی */
   const lines = p.format === "modal" ? buildModalLines(segs, p) : buildStdLines(segs, p);
 
@@ -1360,6 +1389,13 @@ export function machineUV(zw: number, xw: number, holder: 1 | 2, p: Params): { u
   return { u: zw, v: xw };
 }
 
+/* مختصات اجراشده یک سر سگمنت = مختصات ماشین + گسترش G0 (اگر روشن باشد).
+   پس‌پردازنده و پل‌ها همه با همین مختصات کار می‌کنند تا تداوم ماشین حفظ شود. */
+export function execUV(s: Seg, end: boolean, p: Params): { u: number; v: number } {
+  const m = machineUV(end ? s.z2 : s.z1, end ? s.x2 : s.x1, s.holder, p);
+  return s.fan ? { u: m.u, v: m.v + s.fan } : m;
+}
+
 /* آستانه پرش: اگر نقطه پایان پست‌شده با نقطه شروع بعدی (در فضای ماشین)
    بیش از این فاصله داشته باشد، پل امن تعویض هلدر درج می‌شود. */
 export const BRIDGE_MIN_JUMP = 10;
@@ -1393,8 +1429,8 @@ export function planBridges(segs: Seg[], p: Params): {
   let maxV = -Infinity;
   for (let i = 0; i < n; i++) {
     const s = segs[i];
-    starts[i] = machineUV(s.z1, s.x1, s.holder, p);
-    ends[i] = machineUV(s.z2, s.x2, s.holder, p);
+    starts[i] = execUV(s, false, p);
+    ends[i] = execUV(s, true, p);
     if (starts[i].u > maxU) maxU = starts[i].u;
     if (starts[i].v > maxV) maxV = starts[i].v;
     if (ends[i].u > maxU) maxU = ends[i].u;
@@ -1429,13 +1465,18 @@ export function planBridges(segs: Seg[], p: Params): {
     const absorb = absorbable(atIndex);
     bridges.push({ atIndex, fromH, toH, from, legs: legsFor(from, b, absorb), absorbed: absorb });
   };
-  if (nz.length > 0 && jump(home, starts[nz[0]]) > BRIDGE_MIN_JUMP) {
+  /* تشخیص ناپیوستگی روی مختصات پست‌شده (بدون گسترش): پل برای پرش قاب هلدر است؛
+     اختلاف سطح گسترش (همان خط، چند میلی‌متر بالاتر) با پله محوری پوشش داده
+     می‌شود نه با پل. پله‌های پل روی مختصات اجراشده (با گسترش) می‌نشینند. */
+  const pstart = (j: number) => machineUV(segs[j].z1, segs[j].x1, segs[j].holder, p);
+  const pend = (j: number) => machineUV(segs[j].z2, segs[j].x2, segs[j].holder, p);
+  if (nz.length > 0 && jump(home, pstart(nz[0])) > BRIDGE_MIN_JUMP) {
     mkBridge(nz[0], 1, segs[nz[0]].holder, home);
   }
   for (let k = 1; k < nz.length; k++) {
     const i = nz[k];
     const pv = nz[k - 1];
-    if (jump(ends[pv], starts[i]) > BRIDGE_MIN_JUMP) {
+    if (jump(pend(pv), pstart(i)) > BRIDGE_MIN_JUMP) {
       mkBridge(i, segs[pv].holder, segs[i].holder, ends[pv]);
     }
   }
@@ -1465,12 +1506,17 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
   const plan = planBridges(segs, p);
   const bridgeAt = new Map<number, PlannedBridge>();
   for (const b of plan.bridges) bridgeAt.set(b.atIndex, b);
+  /* ردیابی موقعیت ماشین روی مختصات اجراشده (ماشین + گسترش G0) */
+  let mu = segs.length ? execUV(segs[0], false, p).u : plan.home.u;
+  let mv = segs.length ? execUV(segs[0], false, p).v : plan.home.v;
   let lastFeed = -1;
   for (let i = 0; i < segs.length; i++) {
     const sg = segs[i];
+    const e1 = execUV(sg, false, p);
+    const e2 = execUV(sg, true, p);
     const br = bridgeAt.get(i);
     if (br) {
-      /* ناپیوستگی فضای ماشین (تعویض هلدر): سه پله محوری از گوشه امن */
+      /* ناپیوستگی فضای ماشین (تعویض هلدر): پله‌های محوری از گوشه امن */
       lines.push(`(HOLDER ${br.fromH} -> ${br.toH})`);
       let pu = br.from.u;
       let pv = br.from.v;
@@ -1479,22 +1525,30 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
         emit(`G0 X${f2(leg.v)} Z${f2(leg.u)}`);
         pu = leg.u;
         pv = leg.v;
+        mu = leg.u;
+        mv = leg.v;
       }
     }
+    /* پله گسترش: اگر شروع اجراشده با موقعیت ماشین فرق دارد (تغییر سطح گسترش)،
+       اول با یک G0 به آن می‌رویم؛ بدون گسترش همیشه صفر است و بلوکی صادر نمی‌شود.
+       برای سگمنت جذب‌شده پله نداریم — بلوک خودش از انتهای پل شروع می‌شود. */
+    if (!(br && br.absorbed) && Math.hypot(e1.u - mu, e1.v - mv) > 1e-9) {
+      emit(`G0 X${f2(e1.v)} Z${f2(e1.u)}`);
+      mu = e1.u;
+      mv = e1.v;
+    }
     if (sg.note) for (const c of sg.note) lines.push(`(${c})`);
-    /* حرکات هلدر دوم با تبدیل چرخش+آفست به مختصات ماشین صادر می‌شوند */
-    const m = sg.holder === 2 ? holder2Machine(sg.z2, sg.x2, p.holder2) : null;
-    const Xo = m ? m.y : sg.x2;
-    const Zo = m ? m.x : sg.z2;
     if (sg.motion === 0) {
-      sg.line = emit(`G0 X${f2(Xo)} Z${f2(Zo)}`);
+      sg.line = emit(`G0 X${f2(e2.v)} Z${f2(e2.u)}`);
     } else {
       const F = Math.max(1, Math.round(normFeed(sg, p)));
       /* در حالت فیدر بهینه، F فقط هنگام تغییر تکرار می‌شود وگرنه حذف می‌شود */
       const fWord = !p.simpleFeed || F !== lastFeed ? ` F${F}` : "";
       lastFeed = F;
-      sg.line = emit(`G1 X${f2(Xo)} Z${f2(Zo)}${fWord}`);
+      sg.line = emit(`G1 X${f2(e2.v)} Z${f2(e2.u)}${fWord}`);
     }
+    mu = e2.u;
+    mv = e2.v;
     if (i === 0) {
       emit(`M3 S${Math.round(p.rpm)}`);
       emit("G4 P2");
@@ -1530,24 +1584,19 @@ function buildModalLines(segs: Seg[], p: Params): string[] {
   for (const b of plan.bridges) bridgeAt.set(b.atIndex, b);
   lines.push(`G0 X${f3(plan.home.u)} Y${f3(plan.home.v)}`);
   mode = 0;
+  /* ردیابی موقعیت ماشین روی مختصات اجراشده (ماشین + گسترش G0) */
+  let mu = plan.home.u;
+  let mv = plan.home.v;
   for (let i = 0; i < segs.length; i++) {
     const sg = segs[i];
-    /* حرکات هلدر دوم با تبدیل چرخش+آفست به مختصات ماشین صادر می‌شوند */
-    const m1 = sg.holder === 2 ? holder2Machine(sg.z1, sg.x1, p.holder2) : null;
-    const m2 = sg.holder === 2 ? holder2Machine(sg.z2, sg.x2, p.holder2) : null;
-    const X1 = m1 ? m1.x : sg.z1;
-    const Y1 = m1 ? m1.y : sg.x1;
-    const X2 = m2 ? m2.x : sg.z2;
-    const Y2 = m2 ? m2.y : sg.x2;
-    const words: string[] = [];
-    if (Math.abs(X2 - X1) > 1e-9) words.push(`X${f3(X2)}`);
-    if (Math.abs(Y2 - Y1) > 1e-9) words.push(`Y${f3(Y2)}`);
+    const e1 = execUV(sg, false, p);
+    const e2 = execUV(sg, true, p);
     if (sg.op !== lastOp || sg.holder !== lastHolder) lines.push("");
     lastOp = sg.op;
     lastHolder = sg.holder;
     const br = bridgeAt.get(i);
     if (br) {
-      /* ناپیوستگی فضای ماشین (تعویض هلدر): سه پله محوری از گوشه امن */
+      /* ناپیوستگی فضای ماشین (تعویض هلدر): پله‌های محوری از گوشه امن */
       lines.push(`(HOLDER ${br.fromH} -> ${br.toH})`);
       let pu = br.from.u;
       let pv = br.from.v;
@@ -1556,9 +1605,26 @@ function buildModalLines(segs: Seg[], p: Params): string[] {
         lines.push(`G0 X${f3(leg.u)} Y${f3(leg.v)}`);
         pu = leg.u;
         pv = leg.v;
+        mu = leg.u;
+        mv = leg.v;
       }
       mode = 0;
     }
+    /* پله گسترش: اگر شروع اجراشده با موقعیت ماشین فرق دارد (تغییر سطح گسترش)،
+       اول با یک G0 به آن می‌رویم؛ بدون گسترش همیشه صفر است و بلوکی صادر نمی‌شود.
+       برای سگمنت جذب‌شده پله نداریم — بلوک خودش از انتهای پل شروع می‌شود. */
+    if (!(br && br.absorbed) && Math.hypot(e1.u - mu, e1.v - mv) > 1e-9) {
+      const sw: string[] = [];
+      if (Math.abs(e1.u - mu) > 1e-9) sw.push(`X${f3(e1.u)}`);
+      if (Math.abs(e1.v - mv) > 1e-9) sw.push(`Y${f3(e1.v)}`);
+      lines.push(`G0 ${sw.join(" ")}`);
+      mode = 0;
+      mu = e1.u;
+      mv = e1.v;
+    }
+    const words: string[] = [];
+    if (Math.abs(e2.u - mu) > 1e-9) words.push(`X${f3(e2.u)}`);
+    if (Math.abs(e2.v - mv) > 1e-9) words.push(`Y${f3(e2.v)}`);
     if (words.length === 0) {
       sg.line = lines.length - 1;
       continue;
@@ -1578,6 +1644,8 @@ function buildModalLines(segs: Seg[], p: Params): string[] {
       mode = 1;
     }
     sg.line = lines.length - 1;
+    mu = e2.u;
+    mv = e2.v;
   }
   lines.push("", "M05", "M02", "%");
   return lines;

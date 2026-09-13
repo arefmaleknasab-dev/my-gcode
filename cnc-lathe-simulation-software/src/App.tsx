@@ -56,7 +56,6 @@ export default function App() {
       showFace: s?.showFace ?? true,
       showRapids: s?.showRapids ?? true,
       showGhost: s?.showGhost ?? true,
-      spreadG0: s?.spreadG0 ?? false,
     };
   });
   const [mode, setMode] = useState<"design" | "sim">("design");

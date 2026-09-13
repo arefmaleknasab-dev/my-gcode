@@ -253,6 +253,12 @@ export default function ControlsPanel({
             </div>
           </div>
           <Toggle label="شماره خط (N) — فقط Fanuc" on={params.lineNumbers} onChange={(v) => onParams({ lineNumbers: v })} />
+          <Toggle label="گسترش G0 در جی‌کد (۳mm)" on={params.spreadG0} onChange={(v) => onParams({ spreadG0: v })} />
+          {params.spreadG0 && (
+            <p className="px-0.5 text-[10.5px] leading-5 text-mute">
+              حرکت‌های سریعِ روی‌هم با گام ۳mm فقط به سمت بیرون باز می‌شوند تا در سیمکو جدا دیده شوند — فیدرها و برش عوض نمی‌شوند.
+            </p>
+          )}
         </div>
       </Section>
 

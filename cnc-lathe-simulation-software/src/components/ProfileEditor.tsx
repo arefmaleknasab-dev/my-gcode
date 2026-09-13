@@ -59,7 +59,6 @@ export interface EdSettings {
   showFace: boolean;
   showRapids: boolean;
   showGhost: boolean;
-  spreadG0: boolean; // گسترش نمایشی خطوط G0 روی‌هم‌افتاده (۳mm — فقط نما)
 }
 
 type Tool = "select" | "line" | "quad" | "cubic" | "arc" | "split";
@@ -1234,40 +1233,10 @@ export default function ProfileEditor({
   const runs = useMemo(() => {
     if (!cam) return [] as { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[];
     const out: { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[] = [];
-    /* گسترش نمایشی G0: حرکت‌های سریعِ روی یک خط مشترک، عمود بر خط با گام ۳mm
-       (متقارن حول خط واقعی، سقف ۱۵mm) از هم باز می‌شوند تا روی‌هم‌افتادگی و
-       جهت هر حرکت دیده شود — صرفاً نمایشی، جی‌کد دست‌نخورده می‌ماند */
-    const spread = settings.spreadG0;
-    const spreadOff = new Map<number, { dz: number; dx: number }>();
-    if (spread) {
-      const groups = new Map<string, number[]>();
-      gen.segs.forEach((sg, i) => {
-        if (sg.motion !== 0) return;
-        const dz = sg.z2 - sg.z1;
-        const dx = sg.x2 - sg.x1;
-        const key =
-          Math.abs(dz) >= Math.abs(dx)
-            ? `h:${(Math.round(sg.x1 * 2) / 2).toFixed(1)}`
-            : `v:${(Math.round(sg.z1 * 2) / 2).toFixed(1)}`;
-        const arr = groups.get(key);
-        if (arr) arr.push(i);
-        else groups.set(key, [i]);
-      });
-      for (const arr of groups.values()) {
-        arr.forEach((si, k) => {
-          const sg = gen.segs[si];
-          const dz = sg.z2 - sg.z1;
-          const dx = sg.x2 - sg.x1;
-          const len = Math.hypot(dz, dx) || 1;
-          const d = Math.max(-15, Math.min(15, (k - (arr.length - 1) / 2) * 3));
-          spreadOff.set(si, { dz: (-dx / len) * d, dx: (dz / len) * d });
-        });
-      }
-    }
     let curKind: SegKind | null = null;
     let curOpId = -2;
     let curHolder: 1 | 2 = 1;
-    let curSolo = false; // حرکت سریعِ تکی (در حالت گسترش + پیکان جهت)
+    let curFan = -1; // گسترش G0 این ران (از جی‌کد) — تغییر آن ران را می‌شکافد
     let pts: [number, number][] = [];
     const arrowHead = (x1: number, y1: number, x2: number, y2: number) => {
       const len = Math.hypot(x2 - x1, y2 - y1);
@@ -1286,42 +1255,35 @@ export default function ProfileEditor({
           for (let i = step; i < pts.length - 1; i += step) {
             arrows += arrowHead(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
           }
-        } else if (curSolo && pts.length === 2) {
-          arrows = arrowHead(pts[0][0], pts[0][1], pts[1][0], pts[1][1]);
+        } else if (curFan > 0 && pts.length >= 2) {
+          /* حرکت سریعِ گسترده‌شده در جی‌کد: پیکان جهت در انتها */
+          const n = pts.length;
+          arrows = arrowHead(pts[n - 2][0], pts[n - 2][1], pts[n - 1][0], pts[n - 1][1]);
         }
         out.push({ kind: curKind, opId: curOpId, holder: curHolder, d, arrows, sx: pts[0][0], sy: pts[0][1] });
       }
       curKind = null;
-      curSolo = false;
+      curFan = -1;
       pts = [];
     };
-    for (let si = 0; si < gen.segs.length; si++) {
-      const sg = gen.segs[si];
+    for (const sg of gen.segs) {
       const kind: SegKind = sg.motion === 0 ? "rapid" : sg.kind;
-      if (spread && kind === "rapid") {
-        const o = spreadOff.get(si) ?? { dz: 0, dx: 0 };
+      /* آفست نمایشی = همان گسترش جی‌کد (فقط قطر، فقط حرکت سریع) */
+      const fan = kind === "rapid" ? sg.fan ?? 0 : 0;
+      if (kind !== curKind || sg.opId !== curOpId || sg.holder !== curHolder || fan !== curFan) {
         flush();
         curKind = kind;
         curOpId = sg.opId;
         curHolder = sg.holder;
-        curSolo = true;
-        pts = [screenPt(cam, sg.z1 + o.dz, (sg.x1 + o.dx) / 2), screenPt(cam, sg.z2 + o.dz, (sg.x2 + o.dx) / 2)];
-        flush();
-        continue;
+        curFan = fan;
+        pts = [screenPt(cam, sg.z1, (sg.x1 + fan) / 2)];
       }
-      if (kind !== curKind || sg.opId !== curOpId || sg.holder !== curHolder) {
-        flush();
-        curKind = kind;
-        curOpId = sg.opId;
-        curHolder = sg.holder;
-        pts = [screenPt(cam, sg.z1, sg.x1 / 2)];
-      }
-      pts.push(screenPt(cam, sg.z2, sg.x2 / 2));
+      pts.push(screenPt(cam, sg.z2, (sg.x2 + fan) / 2));
     }
     flush();
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gen.segs, cam, settings.spreadG0]);
+  }, [gen.segs, cam]);
 
   const ghostPath = useMemo(() => {
     if (!cam || gen.samples.length < 2) return "";
@@ -1996,14 +1958,6 @@ export default function ProfileEditor({
             {c.label}
           </button>
         ))}
-        <button
-          onClick={() => onSettings({ spreadG0: !settings.spreadG0 })}
-          className={cn("chip-toggle backdrop-blur-sm transition-all", settings.spreadG0 ? "border-teal/50 bg-panel/85 text-teal" : "border-edge bg-panel/60 text-dim")}
-          title="خطوط G0 روی‌هم‌افتاده با فاصله ۳mm از هم باز می‌شوند + پیکان جهت (فقط نمایشی — جی‌کد عوض نمی‌شود)"
-        >
-          <IconCheck className="h-3.5 w-3.5" />
-          گسترش G0
-        </button>
       </div>
 
       {/* ---------- بازرس هندسی ---------- */}
