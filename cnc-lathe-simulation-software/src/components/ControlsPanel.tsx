@@ -346,12 +346,12 @@ export default function ControlsPanel({
                 <Num label="Y Offset (−Y)" unit="mm" value={params.holder2.yOff} step={0.5} onChange={(v) => onParams({ holder2: { ...params.holder2, yOff: v } })} />
               </div>
               <p className="mt-1.5 rounded-md bg-bg/60 px-2 py-1 font-mono text-[9px] leading-4 text-mute" dir="ltr">
-                Xm = Xw − Yoff , Ym = Yw − Xoff
+                Xm = Xw + Xoff , Ym = Yw − Yoff
                 <br />
                 ex: (80.0, 120.0) → ({h2example.x.toFixed(1)}, {h2example.y.toFixed(1)})
               </p>
               <p className="mt-1 text-[9px] leading-4 text-dim">
-                چون هلدر دوم ‎−۹۰°‎ چرخیده، آفست X محلی روی محور Y ماشین اثر می‌گذارد و بالعکس. تبدیل فقط در جی‌کد اعمال می‌شود؛ شبیه‌سازی در مختصات قطعه است.
+                هر آفست مستقیم روی محور خودش اثر می‌گذارد: X مثبت به سمت ‎+X‎ و Y مثبت به سمت ‎−Y‎. چرخش ‎−۹۰°‎ مربوط به جهت ابزار است. تبدیل فقط در جی‌کد اعمال می‌شود؛ شبیه‌سازی در مختصات قطعه است.
               </p>
             </div>
           </div>

@@ -91,16 +91,14 @@ export const DEFAULT_HOLDER2: Holder2State = { xOff: 0, yOff: 0 };
  * تبدیل مختصات قطعه به مختصات ماشین برای هلدر دوم.
  * ورودی/خروجی در صفحه XY مودال: x = طول قطعه ، y = قطر.
  *
- * چون هلدر دوم نسبت به هلدر اول ‎−۹۰°‎ چرخیده، بردار آفست محلی
- * ‎L = (xOff, −yOff)‎ در قاب ماشین می‌چرخد:
- *     ‎T = R(−۹۰°)·L = (Ly, −Lx) = (−yOff, −xOff)‎
- * و مختصات ماشین از جمع آن با مختصات قطعه به دست می‌آید:
- *     ‎Xm = Xw − yOff‎  ،  ‎Ym = Yw − xOff‎
- * یعنی آفست X محلی روی محور Y ماشین اثر می‌گذارد و بالعکس —
- * دقیقاً همان اثر چرخش ۹۰ درجه‌ای هلدر.
+ * هر آفست مستقیم روی محور خودش در قاب ماشین اثر می‌گذارد:
+ *     ‎Xm = Xw + xOff‎  (فاصله هلدر دوم در جهت ‎+X‎)
+ *     ‎Ym = Yw − yOff‎  (فاصله هلدر دوم در جهت ‎−Y‎)
+ * چرخش ‎−۹۰°‎ هلدر دوم مربوط به جهت‌گیری ابزار (داخل‌تراش) است و در
+ * جهت ورود/خروج و نمایش ابزار لحاظ می‌شود، نه در جابه‌جایی مختصات.
  */
 export function holder2Machine(xw: number, yw: number, h: Holder2State): { x: number; y: number } {
-  return { x: xw - h.yOff, y: yw - h.xOff };
+  return { x: xw + h.xOff, y: yw - h.yOff };
 }
 
 export interface Params {
@@ -1335,7 +1333,7 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
   const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
   if (usesH2) {
     lines.push(`(HOLDER2: XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT})`);
-    lines.push(`(H2 MAP: Xm = Xw - YOFF , Ym = Yw - XOFF)`);
+    lines.push(`(H2 MAP: Xm = Xw + XOFF , Ym = Yw - YOFF)`);
   }
   emit("G21 G18 G40");
   let lastFeed = -1;
@@ -1376,7 +1374,7 @@ function buildModalLines(segs: Seg[], p: Params): string[] {
   const lines: string[] = ["%", "G90", "G49", `M3 S${Math.round(p.rpm)}`];
   const usesH2 = segs.some((s) => s.motion === 1 && s.holder === 2);
   if (usesH2) {
-    lines.push(`(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw-YOFF Ym=Yw-XOFF)`);
+    lines.push(`(HOLDER2 XOFF ${p.holder2.xOff} YOFF ${p.holder2.yOff} ROT ${HOLDER2_ROT} : Xm=Xw+XOFF Ym=Yw-YOFF)`);
   }
   const f3 = (v: number) => v.toFixed(3);
   let mode: -1 | 0 | 1 = -1;
