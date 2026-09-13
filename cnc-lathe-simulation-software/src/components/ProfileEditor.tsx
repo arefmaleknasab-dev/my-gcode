@@ -242,13 +242,28 @@ export default function ProfileEditor({
 
   const handleKey = (segId: number, part: "a" | "b") => `${segId}:${part}`;
 
-  const screenPt = (c: Cam, z: number, r: number): [number, number] => [c.ox + z * c.s, c.oy - r * c.s];
-  const worldPt = (c: Cam, sx: number, sy: number): SPoint => ({ z: (sx - c.ox) / c.s, r: (c.oy - sy) / c.s });
+  /* محور عمودی نما = قطر (⌀) مثل سیمکو و جی‌کد؛ ورودی شعاع مدل است و دوبرابر نمایش داده می‌شود */
+  const screenPt = (c: Cam, z: number, r: number): [number, number] => [c.ox + z * c.s, c.oy - 2 * r * c.s];
+  const worldPt = (c: Cam, sx: number, sy: number): SPoint => ({ z: (sx - c.ox) / c.s, r: (c.oy - sy) / c.s / 2 });
 
+  /* جاگذاری = قاب تنگ دور محتوای مرئی (دقیقاً مثل نمای خودکار سیمکو) */
   const fit = (w: number, h: number): Cam => {
     const pad = 60;
-    const s = Math.min((w - pad * 2) / L, (h - pad * 2) / params.blankD);
-    return { s, ox: (w - L * s) / 2, oy: h / 2 };
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const sg of gen.segs) {
+      const kind: SegKind = sg.motion === 0 ? "rapid" : sg.kind;
+      if (!settings[KIND_VISIBLE[kind]]) continue;
+      const fan = kind === "rapid" ? sg.fan ?? 0 : 0;
+      const fanU = kind === "rapid" ? sg.fanU ?? 0 : 0;
+      x0 = Math.min(x0, sg.z1 + fanU, sg.z2 + fanU);
+      x1 = Math.max(x1, sg.z1 + fanU, sg.z2 + fanU);
+      y0 = Math.min(y0, sg.x1 + fan, sg.x2 + fan);
+      y1 = Math.max(y1, sg.x1 + fan, sg.x2 + fan);
+    }
+    if (!isFinite(x0)) { x0 = 0; x1 = L; y0 = 0; y1 = params.blankD; }
+    const sx = Math.max(x1 - x0, 1), sy = Math.max(y1 - y0, 1);
+    const sc = Math.min((w - pad * 2) / sx, (h - pad * 2) / sy);
+    return { s: sc, ox: w / 2 - ((x0 + x1) / 2) * sc, oy: h / 2 + ((y0 + y1) / 2) * sc };
   };
 
   useEffect(() => {
@@ -1300,10 +1315,10 @@ export default function ProfileEditor({
       const [x, y] = screenPt(cam, s.z, s.r);
       d += `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)} `;
     });
-    for (let i = gen.samples.length - 1; i >= 0; i--) {
-      const [x, y] = screenPt(cam, gen.samples[i].z, -gen.samples[i].r);
-      d += `L ${x.toFixed(1)} ${y.toFixed(1)} `;
-    }
+    /* بستن از راه محور (نمای تک‌طرفهٔ قطری) */
+    const [ex, ey] = screenPt(cam, gen.samples[gen.samples.length - 1].z, 0);
+    const [fx, fy] = screenPt(cam, gen.samples[0].z, 0);
+    d += `L ${ex.toFixed(1)} ${ey.toFixed(1)} L ${fx.toFixed(1)} ${fy.toFixed(1)} `;
     return d + "Z";
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gen.samples, cam]);
@@ -1315,18 +1330,17 @@ export default function ProfileEditor({
       const [x, y] = screenPt(cam, s.z, s.r);
       d += `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)} `;
     });
-    for (let i = gen.innerSamples.length - 1; i >= 0; i--) {
-      const [x, y] = screenPt(cam, gen.innerSamples[i].z, -gen.innerSamples[i].r);
-      d += `L ${x.toFixed(1)} ${y.toFixed(1)} `;
-    }
+    /* بستن از راه محور (نمای تک‌طرفهٔ قطری) */
+    const [iex, iey] = screenPt(cam, gen.innerSamples[gen.innerSamples.length - 1].z, 0);
+    const [ifx, ify] = screenPt(cam, gen.innerSamples[0].z, 0);
+    d += `L ${iex.toFixed(1)} ${iey.toFixed(1)} L ${ifx.toFixed(1)} ${ify.toFixed(1)} `;
     return d + "Z";
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gen.innerSamples, cam]);
 
   /* ---------- مسیر SVG المان‌های اسکچ ---------- */
-  const segPath = (s: SketchSeg, c: Cam, mirror = false): string => {
-    const m = mirror ? -1 : 1;
-    const P = (p: SPoint) => screenPt(c, p.z, m * p.r);
+  const segPath = (s: SketchSeg, c: Cam): string => {
+    const P = (p: SPoint) => screenPt(c, p.z, p.r);
     if (s.kind === "line") {
       const [x1, y1] = P(s.a);
       const [x2, y2] = P(s.b);
@@ -1468,31 +1482,31 @@ export default function ProfileEditor({
           {gridZ.map((z) => {
             const sx = cam.ox + z * cam.s;
             return (
-              <line key={`v${z}`} x1={sx} y1={cam.oy - R * cam.s} x2={sx} y2={cam.oy + R * cam.s} stroke={z % 50 === 0 ? "rgba(209,183,134,0.16)" : "rgba(209,183,134,0.07)"} strokeWidth={1} />
+              <line key={`v${z}`} x1={sx} y1={cam.oy - params.blankD * cam.s} x2={sx} y2={cam.oy} stroke={z % 50 === 0 ? "rgba(209,183,134,0.16)" : "rgba(209,183,134,0.07)"} strokeWidth={1} />
             );
           })}
           {gridR.map((r) => (
             <g key={`h${r}`}>
-              <line x1={cam.ox} y1={cam.oy - r * cam.s} x2={cam.ox + L * cam.s} y2={cam.oy - r * cam.s} stroke={(r * 2) % 50 === 0 ? "rgba(209,183,134,0.14)" : "rgba(209,183,134,0.07)"} strokeWidth={1} />
+              <line x1={cam.ox} y1={cam.oy - 2 * r * cam.s} x2={cam.ox + L * cam.s} y2={cam.oy - 2 * r * cam.s} stroke={(r * 2) % 50 === 0 ? "rgba(209,183,134,0.14)" : "rgba(209,183,134,0.07)"} strokeWidth={1} />
               <line x1={cam.ox} y1={cam.oy + r * cam.s} x2={cam.ox + L * cam.s} y2={cam.oy + r * cam.s} stroke={(r * 2) % 50 === 0 ? "rgba(209,183,134,0.14)" : "rgba(209,183,134,0.07)"} strokeWidth={1} />
             </g>
           ))}
           {gridZ.filter((z) => z % 50 === 0).map((z) => (
-            <text key={`lz${z}`} x={cam.ox + z * cam.s} y={cam.oy + R * cam.s + 18} textAnchor="middle" fontSize="10" fill="#8b7c5f" fontFamily="JetBrains Mono, monospace">
+            <text key={`lz${z}`} x={cam.ox + z * cam.s} y={cam.oy + 18} textAnchor="middle" fontSize="10" fill="#8b7c5f" fontFamily="JetBrains Mono, monospace">
               {z}
             </text>
           ))}
           {gridR.map((r) => (
-            <text key={`lr${r}`} x={cam.ox - 8} y={cam.oy - r * cam.s + 3.5} textAnchor="end" fontSize="10" fill="#8b7c5f" fontFamily="JetBrains Mono, monospace">
+            <text key={`lr${r}`} x={cam.ox - 8} y={cam.oy - 2 * r * cam.s + 3.5} textAnchor="end" fontSize="10" fill="#8b7c5f" fontFamily="JetBrains Mono, monospace">
               ⌀{Math.round(r * 2)}
             </text>
           ))}
           <text x={cam.ox + L * cam.s + 10} y={cam.oy + 3.5} fontSize="11" fill="#a8946f" fontFamily="JetBrains Mono, monospace" fontWeight={700}>X</text>
-          <text x={cam.ox - 8} y={cam.oy - R * cam.s - 10} textAnchor="end" fontSize="11" fill="#a8946f" fontFamily="JetBrains Mono, monospace" fontWeight={700}>Y ⌀</text>
+          <text x={cam.ox - 8} y={cam.oy - params.blankD * cam.s - 10} textAnchor="end" fontSize="11" fill="#a8946f" fontFamily="JetBrains Mono, monospace" fontWeight={700}>Y ⌀</text>
         </g>
 
         <line x1={0} y1={cam.oy} x2={size.w} y2={cam.oy} stroke="rgba(227,169,78,0.35)" strokeWidth={1} strokeDasharray="10 4 2 4" />
-        <rect x={cam.ox} y={cam.oy - R * cam.s} width={L * cam.s} height={2 * R * cam.s} fill="url(#hatch)" stroke="rgba(227,169,78,0.55)" strokeWidth={1.3} strokeDasharray="7 5" />
+        <rect x={cam.ox} y={cam.oy - params.blankD * cam.s} width={L * cam.s} height={2 * R * cam.s} fill="url(#hatch)" stroke="rgba(227,169,78,0.55)" strokeWidth={1.3} strokeDasharray="7 5" />
 
         {settings.showGhost && ghostPath && (
           <g style={{ opacity: iso ? 0.15 : 1, ...fadeStyle }}>
@@ -1515,9 +1529,11 @@ export default function ProfileEditor({
             if (dim && isRapid) return null;
             const color = SEG_COLOR[run.kind];
             const baseOpacity = isRapid ? 0.28 : run.kind === "offset" ? 0.9 : 0.8;
+            const w = (isRapid ? 1 : run.kind === "finish" ? 1.8 : 1.4) + (matchIso ? 0.7 : 0);
+            const dash = isRapid ? "4 4" : run.kind === "offset" ? "7 4" : undefined;
             return (
               <g key={i} style={{ opacity: dim ? 0.06 : 1, ...fadeStyle }}>
-                <path d={run.d} fill="none" stroke={color} strokeOpacity={matchIso ? 1 : baseOpacity} strokeWidth={(isRapid ? 1 : run.kind === "finish" ? 1.8 : 1.4) + (matchIso ? 0.7 : 0)} strokeDasharray={isRapid ? "4 4" : run.kind === "offset" ? "7 4" : undefined} strokeLinejoin="round" strokeLinecap="round" filter={matchIso ? "url(#curveGlow)" : undefined} />
+                <path d={run.d} fill="none" stroke={color} strokeOpacity={matchIso ? 1 : baseOpacity} strokeWidth={w} strokeDasharray={dash} strokeLinejoin="round" strokeLinecap="round" filter={matchIso ? "url(#curveGlow)" : undefined} />
                 {run.arrows && !dim && <path d={run.arrows} fill={color} fillOpacity={0.95} />}
                 {run.holder === 2 && !dim && !isRapid && (
                   <g>
@@ -1534,10 +1550,6 @@ export default function ProfileEditor({
 
         {/* المان‌های اسکچ */}
         <g style={{ opacity: iso ? 0.3 : 1, ...fadeStyle }}>
-          {/* آینهٔ پایین محور */}
-          {segs.map((s) => (
-            <path key={`m${s.id}`} d={segPath(s, cam, true)} fill="none" stroke={segSide.get(s.id) === "inner" ? "#4cc9f0" : "#e3a94e"} strokeOpacity={0.28} strokeWidth={1.6} strokeLinecap="round" />
-          ))}
           {segs.map((s) => {
             const sel = selected.includes(s.id);
             const hov = hoverId === s.id;
