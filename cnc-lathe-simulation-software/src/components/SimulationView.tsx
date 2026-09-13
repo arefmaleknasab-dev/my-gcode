@@ -246,6 +246,19 @@ function SimulationView({ gen, params, onActiveLine }: Props) {
       }
     };
 
+    /* کف‌تراشی: هر گذر در صفحه zk لایه بالای خود (تا گام بعدی) را کامل برمی‌دارد؛
+       پنجره فقط به سمت انتهای خام (+z) باز می‌شود تا هرگز زیر صفحه گذر
+       (لبه/طرح) تراشیده نشود — پروفایل اینسرت برای این برش صفحه‌ای نامناسب است */
+    const stampBottom = (z: number, r: number) => {
+      const dzg = paramsRef.current.blankL / GRID;
+      const rad = radiiRef.current;
+      const win = paramsRef.current.doc + 0.5;
+      const i0 = Math.max(0, Math.round(z / dzg));
+      const i1 = Math.min(GRID, Math.round((z + win) / dzg));
+      const rr = Math.min(r, paramsRef.current.blankD / 2);
+      for (let i = i0; i <= i1; i++) if (rr < rad[i]) rad[i] = rr;
+    };
+
     /* اعمال افزایشی سگمنت‌ها تا t (بازپخش کامل فقط هنگام اسکراب به عقب) */
     const advanceTo = (t: number) => {
       const g = genRef.current;
@@ -268,6 +281,7 @@ function SimulationView({ gen, params, onActiveLine }: Props) {
             const zz = sg.z1 + (sg.z2 - sg.z1) * tt;
             const rr = (sg.x1 + (sg.x2 - sg.x1) * tt) / 2;
             if (inner) stampCavity(zz, rr);
+            else if (sg.kind === "bottom") stampBottom(zz, rr);
             else stamp(zz, rr);
           }
         }
