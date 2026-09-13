@@ -1249,8 +1249,13 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         curOp = "finish";
         if (!hasOuter) break;
         note("FINISHING - MAIN PROFILE");
-        /* نزدیک‌شدن در ارتفاع امن، سپس فرورفتن با فیدر (حرکت برشی امن) */
-        mv(0, retractX, z0, 0, "rapid");
+        /* ورود کوتاه: سریع تا بالای نقطه شروع (جلوتر از صفحه پیشانی، بیرون از
+           خط آفست با فاصله امن کامل)، سپس فرورفتن مورب کوتاه با فیدر */
+        {
+          const apX = Math.min(z0 + p.safety, zEnd);
+          const apR = Math.max(r0, radiusAt(apX)) + OD + p.safety;
+          mv(0, 2 * apR, apX, 0, "rapid");
+        }
         profilePath("finish", p.feedFinish);
         break;
       }
@@ -1260,8 +1265,13 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
         if (!hasOuter) break;
         if (OD > 0.01) {
           note(`OFFSET PASS +${f2(OD)} MM (PARALLEL TO PROFILE)`);
-          /* نزدیک‌شدن در ارتفاع امن، سپس فرورفتن با فیدر (حرکت برشی امن) */
-          mv(0, retractX, z0, 0, "rapid");
+          /* ورود کوتاه: سریع تا بالای نقطه شروع (جلوتر از صفحه پیشانی)، سپس
+             فرورفتن مورب کوتاه با فیدر — بدون فیدر طولانی روی صفحه تراش‌خورده */
+          {
+            const apX = Math.min(z0 + p.safety, zEnd);
+            const apR = Math.max(r0 + OD, offsetRadiusAt(apX)) + p.safety;
+            mv(0, 2 * apR, apX, 0, "rapid");
+          }
           mv(1, 2 * (r0 + OD), z0, p.feedFinish, "offset");
           for (let i = 1; i < samples.length; i++) mv(1, 2 * (samples[i].r + OD), samples[i].z, p.feedFinish, "offset");
           mv(0, retractX, zEnd, 0, "rapid");
@@ -1339,6 +1349,74 @@ function normFeed(sg: Seg, p: Params): number {
   return FINISH_KINDS.includes(sg.kind) ? p.feedFinish : p.feedRough;
 }
 
+/* ---------------- پل امن تعویض هلدر (پس‌پردازنده) ---------------- */
+/* مختصات ماشین یک نقطه (با تبدیل هلدر دوم) — فضای مشترک هر دو فرمت:
+   u = محور طولی (modal X / std Z)، v = محور قطری (modal Y / std X) */
+export function machineUV(zw: number, xw: number, holder: 1 | 2, p: Params): { u: number; v: number } {
+  if (holder === 2) {
+    const m = holder2Machine(zw, xw, p.holder2);
+    return { u: m.x, v: m.y };
+  }
+  return { u: zw, v: xw };
+}
+
+/* آستانه پرش: اگر نقطه پایان پست‌شده با نقطه شروع بعدی (در فضای ماشین)
+   بیش از این فاصله داشته باشد، پل امن تعویض هلدر درج می‌شود. */
+export const BRIDGE_MIN_JUMP = 10;
+
+export interface PlannedBridge {
+  atIndex: number; // پل قبل از سگمنت شماره چندم درج می‌شود
+  fromH: 1 | 2;
+  toH: 1 | 2;
+  from: { u: number; v: number }; // نقطه شروع پل (= پایان پست‌شده قبلی)
+  legs: { u: number; v: number }[]; // سه نقطه میانی/پایانی (همه پله‌ها محوری)
+}
+
+/* برنامه‌ریزی پل‌های امن: هر ناپیوستگی فضای ماشین (تعویض هلدر یا شروع
+   دور از خانه) با سه پله محوری از گوشه امن به هم وصل می‌شود:
+   خروج در ارتفاع مبدأ تا بیرون همه محتوا، پیمایش در کریدور امن،
+   ورود در ارتفاع مقصد — بدون هیچ حرکت مورب از فضای قطعه. */
+export function planBridges(segs: Seg[], p: Params): {
+  tc: { u: number; v: number };
+  home: { u: number; v: number };
+  bridges: PlannedBridge[];
+} {
+  const n = segs.length;
+  const starts: { u: number; v: number }[] = new Array(n);
+  const ends: { u: number; v: number }[] = new Array(n);
+  let maxU = -Infinity;
+  let maxV = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const s = segs[i];
+    starts[i] = machineUV(s.z1, s.x1, s.holder, p);
+    ends[i] = machineUV(s.z2, s.x2, s.holder, p);
+    if (starts[i].u > maxU) maxU = starts[i].u;
+    if (starts[i].v > maxV) maxV = starts[i].v;
+    if (ends[i].u > maxU) maxU = ends[i].u;
+    if (ends[i].v > maxV) maxV = ends[i].v;
+  }
+  const home = { u: p.blankL + 10, v: rotationalEnvelope(p.blankD, p.blankShape).maxRotD + 20 };
+  if (home.u > maxU) maxU = home.u;
+  if (home.v > maxV) maxV = home.v;
+  const tc = { u: maxU + p.safety, v: maxV + p.safety };
+  const bridges: PlannedBridge[] = [];
+  const jump = (a: { u: number; v: number }, b: { u: number; v: number }) => Math.hypot(a.u - b.u, a.v - b.v);
+  const legsFor = (a: { u: number; v: number }, b: { u: number; v: number }) => [
+    { u: tc.u, v: a.v },
+    { u: tc.u, v: b.v },
+    { u: b.u, v: b.v },
+  ];
+  if (n > 0 && jump(home, starts[0]) > BRIDGE_MIN_JUMP) {
+    bridges.push({ atIndex: 0, fromH: 1, toH: segs[0].holder, from: home, legs: legsFor(home, starts[0]) });
+  }
+  for (let i = 1; i < n; i++) {
+    if (jump(ends[i - 1], starts[i]) > BRIDGE_MIN_JUMP) {
+      bridges.push({ atIndex: i, fromH: segs[i - 1].holder, toH: segs[i].holder, from: ends[i - 1], legs: legsFor(ends[i - 1], starts[i]) });
+    }
+  }
+  return { tc, home, bridges };
+}
+
 /* ---------------- پس‌پردازندهٔ استاندارد Fanuc ---------------- */
 
 function buildStdLines(segs: Seg[], p: Params): string[] {
@@ -1359,9 +1437,25 @@ function buildStdLines(segs: Seg[], p: Params): string[] {
     lines.push(`(H2 MAP: Xm = Xw + XOFF , Ym = Yw - YOFF)`);
   }
   emit("G21 G18 G40");
+  const plan = planBridges(segs, p);
+  const bridgeAt = new Map<number, PlannedBridge>();
+  for (const b of plan.bridges) bridgeAt.set(b.atIndex, b);
   let lastFeed = -1;
   for (let i = 0; i < segs.length; i++) {
     const sg = segs[i];
+    const br = bridgeAt.get(i);
+    if (br) {
+      /* ناپیوستگی فضای ماشین (تعویض هلدر): سه پله محوری از گوشه امن */
+      lines.push(`(HOLDER ${br.fromH} -> ${br.toH})`);
+      let pu = br.from.u;
+      let pv = br.from.v;
+      for (const leg of br.legs) {
+        if (Math.hypot(leg.u - pu, leg.v - pv) < 1e-9) continue;
+        emit(`G0 X${f2(leg.v)} Z${f2(leg.u)}`);
+        pu = leg.u;
+        pv = leg.v;
+      }
+    }
     if (sg.note) for (const c of sg.note) lines.push(`(${c})`);
     /* حرکات هلدر دوم با تبدیل چرخش+آفست به مختصات ماشین صادر می‌شوند */
     const m = sg.holder === 2 ? holder2Machine(sg.z2, sg.x2, p.holder2) : null;
@@ -1404,7 +1498,15 @@ function buildModalLines(segs: Seg[], p: Params): string[] {
   let mFeed = -1;
   let lastOp: OpType | "sys" = "sys";
   let lastHolder: 1 | 2 = 1;
-  for (const sg of segs) {
+  /* جست‌وجوی خانه با نقطه کامل: مختصات مودال دستگاه را صراحتاً روی نقطه خانه
+     می‌نشاند تا موقعیت شروع اولین حرکت، هرگز از وضعیت قبلی دستگاه به ارث نرسد */
+  const plan = planBridges(segs, p);
+  const bridgeAt = new Map<number, PlannedBridge>();
+  for (const b of plan.bridges) bridgeAt.set(b.atIndex, b);
+  lines.push(`G0 X${f3(plan.home.u)} Y${f3(plan.home.v)}`);
+  mode = 0;
+  for (let i = 0; i < segs.length; i++) {
+    const sg = segs[i];
     /* حرکات هلدر دوم با تبدیل چرخش+آفست به مختصات ماشین صادر می‌شوند */
     const m1 = sg.holder === 2 ? holder2Machine(sg.z1, sg.x1, p.holder2) : null;
     const m2 = sg.holder === 2 ? holder2Machine(sg.z2, sg.x2, p.holder2) : null;
@@ -1418,6 +1520,20 @@ function buildModalLines(segs: Seg[], p: Params): string[] {
     if (sg.op !== lastOp || sg.holder !== lastHolder) lines.push("");
     lastOp = sg.op;
     lastHolder = sg.holder;
+    const br = bridgeAt.get(i);
+    if (br) {
+      /* ناپیوستگی فضای ماشین (تعویض هلدر): سه پله محوری از گوشه امن */
+      lines.push(`(HOLDER ${br.fromH} -> ${br.toH})`);
+      let pu = br.from.u;
+      let pv = br.from.v;
+      for (const leg of br.legs) {
+        if (Math.hypot(leg.u - pu, leg.v - pv) < 1e-9) continue;
+        lines.push(`G0 X${f3(leg.u)} Y${f3(leg.v)}`);
+        pu = leg.u;
+        pv = leg.v;
+      }
+      mode = 0;
+    }
     if (words.length === 0) {
       sg.line = lines.length - 1;
       continue;
