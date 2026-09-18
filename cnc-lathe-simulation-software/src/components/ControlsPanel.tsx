@@ -733,14 +733,56 @@ function ControlsPanel({
   );
 }
 
+/* جمع‌شدن باکس‌های تنظیمات با دابل‌کلیک روی عنوان — وضعیت در localStorage می‌ماند */
+const COLLAPSED_SECTIONS_KEY = "xarat-code.sections-collapsed";
+function loadCollapsedSections(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_SECTIONS_KEY);
+    return raw && typeof raw === "object" ? (JSON.parse(raw) as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
 function Section({ title, icon, children }: { title: string; icon?: ReactNode; children: ReactNode }) {
+  const [collapsed, setCollapsed] = useState(() => !!loadCollapsedSections()[title]);
+  const toggle = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try {
+      const map = loadCollapsedSections();
+      if (next) map[title] = true;
+      else delete map[title];
+      localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify(map));
+    } catch {
+      /* ignore */
+    }
+  };
   return (
-    <section className="rounded-lg border border-edge bg-panel p-2.5">
-      <h3 className="mb-2 flex items-center gap-1.5 font-display text-[14px] leading-none text-ink/95">
+    <section className={cn("rounded-lg border border-edge bg-panel transition-colors", collapsed ? "px-2.5 py-1.5" : "p-2.5")}>
+      <h3
+        onDoubleClick={toggle}
+        title={collapsed ? "دابل‌کلیک: باز کردن بخش" : "دابل‌کلیک: جمع کردن بخش"}
+        className={cn(
+          "group/head flex cursor-pointer select-none items-center gap-1.5 font-display text-[14px] leading-none text-ink/95",
+          !collapsed && "mb-2"
+        )}
+      >
         {icon}
-        {title}
+        <span className="flex-1 truncate">{title}</span>
+        <svg
+          viewBox="0 0 12 12"
+          className={cn("h-2.5 w-2.5 shrink-0 text-dim transition-transform group-hover/head:text-brass", collapsed && "-rotate-180")}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.8}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M2 8l4-4 4 4" />
+        </svg>
       </h3>
-      {children}
+      {!collapsed && <div>{children}</div>}
     </section>
   );
 }
