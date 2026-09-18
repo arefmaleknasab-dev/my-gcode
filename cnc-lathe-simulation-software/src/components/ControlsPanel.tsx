@@ -186,9 +186,9 @@ function ControlsPanel({
                 onDragEnd={endDrag}
                 title={`${info.name} — ${info.desc}`}
                 className={cn(
-                  "group relative flex cursor-grab items-center gap-1 rounded-md border px-1 py-[3px] transition-colors active:cursor-grabbing",
+                  "group relative flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-all",
                   op.on ? "border-edge bg-panel2" : "border-edge/60 bg-panel opacity-50",
-                  isolated && "border-teal/70 bg-teal/10",
+                  isolated && "border-teal/70 bg-teal/10 shadow-[0_0_12px_rgba(69,179,148,0.18)]",
                   dragging && "opacity-40"
                 )}
               >
@@ -220,18 +220,20 @@ function ControlsPanel({
                   disabled={!op.on}
                   title={isolated ? "خروج از نمای ایزوله" : "مشاهدهٔ ایزولهٔ مسیر این عملیات در بوم"}
                   className={cn(
-                    "grid h-4.5 w-4.5 shrink-0 place-items-center rounded transition-colors",
-                    isolated ? "bg-teal/15 text-teal" : "text-dim hover:bg-panel3 hover:text-teal",
-                    !op.on && "cursor-not-allowed opacity-30 hover:bg-transparent hover:text-dim"
+                    "grid h-6 w-6 shrink-0 place-items-center rounded border transition-all",
+                    isolated
+                      ? "border-teal/60 bg-teal/15 text-teal"
+                      : "border-transparent text-dim hover:border-edge2 hover:text-teal",
+                    !op.on && "cursor-not-allowed opacity-30 hover:border-transparent hover:text-dim"
                   )}
                 >
-                  {isolated ? <IconEyeOff className="h-3 w-3" /> : <IconEye className="h-3 w-3" />}
+                  {isolated ? <IconEyeOff className="h-3.5 w-3.5" /> : <IconEye className="h-3.5 w-3.5" />}
                 </button>
                 <button
                   onClick={() => toggleHolder(op.id)}
                   title={op.holder === 2 ? "هلدر ۲ — داخل‌تراش — کلیک برای تغییر" : "هلدر ۱ — اصلی — کلیک برای تغییر"}
                   className={cn(
-                    "grid h-4 min-w-[21px] shrink-0 place-items-center rounded border px-0.5 font-mono text-[8px] font-bold transition-colors",
+                    "grid h-6 w-7 shrink-0 place-items-center rounded border font-mono text-[9px] font-bold transition-all",
                     op.holder === 2
                       ? "border-[#4cc9f0]/60 bg-[#4cc9f0]/15 text-[#4cc9f0]"
                       : "border-edge text-dim hover:border-edge2 hover:text-ink"
@@ -242,29 +244,34 @@ function ControlsPanel({
                 <button onClick={() => toggleOp(op.id)} className="shrink-0" title={op.on ? "غیرفعال کردن" : "فعال کردن"}>
                   <span
                     className={cn(
-                      "block h-3 w-5 rounded-full border p-[1.5px] transition-colors",
+                      "block h-4 w-7 rounded-full border p-0.5 transition-colors",
                       op.on ? "border-brass/60 bg-brass/25" : "border-edge2 bg-bg"
                     )}
                   >
                     <span
                       className={cn(
-                        "block h-1.5 w-1.5 rounded-full transition-transform",
-                        op.on ? "translate-x-0 bg-brass2" : "-translate-x-[9px] bg-dim"
+                        "block h-2.5 w-2.5 rounded-full transition-transform",
+                        op.on ? "translate-x-0 bg-brass2" : "-translate-x-3 bg-dim"
                       )}
                     />
                   </span>
                 </button>
-                <span className="h-1.5 w-1.5 shrink-0 rounded-sm" style={{ background: info.color }} />
-                <span className="min-w-0 flex-1 truncate text-[10.5px] leading-none font-bold text-ink/90">{info.name}</span>
-                <div className="flex shrink-0 items-center gap-px">
-                  <MiniBtn disabled={i === 0} onClick={() => moveOp(i, -1)} title="جلوتر">
-                    <path d="M8 10 4 6l-4 4" transform="translate(4 2)" />
-                  </MiniBtn>
-                  <MiniBtn disabled={i === params.ops.length - 1} onClick={() => moveOp(i, 1)} title="عقب‌تر">
-                    <path d="M0 4 4 8l4-4" transform="translate(4 0)" />
-                  </MiniBtn>
+                <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: info.color }} />
+                <div className="min-w-0 flex-1 leading-tight">
+                  <div className="truncate text-[11px] font-bold text-ink/90">{info.name}</div>
+                  <div className="truncate text-[9.5px] text-dim">{info.desc}</div>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <div className="flex flex-col gap-px">
+                    <MiniBtn tight disabled={i === 0} onClick={() => moveOp(i, -1)} title="جلوتر">
+                      <path d="M8 10 4 6l-4 4" transform="translate(4 1)" />
+                    </MiniBtn>
+                    <MiniBtn tight disabled={i === params.ops.length - 1} onClick={() => moveOp(i, 1)} title="عقب‌تر">
+                      <path d="M0 4 4 8l4-4" transform="translate(4 1)" />
+                    </MiniBtn>
+                  </div>
                   <MiniBtn danger onClick={() => removeOp(op.id)} title="حذف عملیات">
-                    <IconTrash className="h-2.5 w-2.5" />
+                    <IconTrash className="h-3 w-3" />
                   </MiniBtn>
                 </div>
               </div>
@@ -743,12 +750,15 @@ function MiniBtn({
   onClick,
   disabled,
   danger,
+  tight,
   title,
 }: {
   children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
+  /** نسخهٔ نیم‌قد برای ستون فلش‌های روی‌هم */
+  tight?: boolean;
   title: string;
 }) {
   return (
@@ -757,12 +767,13 @@ function MiniBtn({
       disabled={disabled}
       title={title}
       className={cn(
-        "grid h-4.5 w-4.5 place-items-center rounded border border-transparent text-mute transition-colors",
+        "grid h-5.5 w-5.5 place-items-center rounded border border-transparent text-mute transition-colors",
+        tight && "!h-[13px] py-0",
         danger ? "hover:border-danger/50 hover:text-danger" : "hover:border-edge2 hover:text-ink",
         disabled && "cursor-not-allowed opacity-25 hover:border-transparent hover:text-mute"
       )}
     >
-      <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <svg viewBox="0 0 12 12" className={cn("h-3 w-3", tight && "h-2.5 w-2.5")} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
         {children}
       </svg>
     </button>
