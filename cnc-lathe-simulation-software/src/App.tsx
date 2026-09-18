@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ControlsPanel from "./components/ControlsPanel";
+import { DockPanel, DockSplitter, MAX_PANEL, MIN_PANEL, WindowMenu, defaultLayout, normalizeLayout } from "./components/Dock";
+import type { LayoutState, PanelId, PanelState, PanelVis, WindowMenuItem } from "./components/Dock";
 import GCodePanel from "./components/GCodePanel";
 import ProfileEditor, { type EdSettings } from "./components/ProfileEditor";
 import SimulationView from "./components/SimulationView";
-import { IconCheck, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
+import { IconCheck, IconCode, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
 import { buildDxf } from "./lib/dxf";
 import { PRESETS, STRATEGIES, generate, makeOps, normalizeParams, presetPoints } from "./lib/lathe";
 import type { Params, PPoint, Preset } from "./lib/lathe";
@@ -18,11 +20,12 @@ interface Saved {
   sketch?: SketchSeg[];
   params?: Partial<Params>;
   settings?: Partial<EdSettings>;
+  layout?: LayoutState;
   activePreset?: string | null;
   version?: number;
 }
 
-const SAVE_VERSION = 4;
+const SAVE_VERSION = 5;
 
 let SAVED: Saved | null = null;
 try {
@@ -59,6 +62,7 @@ export default function App() {
       showGhost: s?.showGhost ?? true,
     };
   });
+  const [layout, setLayout] = useState<LayoutState>(() => normalizeLayout(SAVED?.layout));
   const [mode, setMode] = useState<"design" | "sim">("design");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [activePreset, setActivePreset] = useState<string | null>(SAVED?.activePreset ?? PRESETS[0].id);
@@ -94,11 +98,11 @@ export default function App() {
   /* ذخیره محلی */
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, version: SAVE_VERSION }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, layout, version: SAVE_VERSION }));
     } catch {
       /* ignore */
     }
-  }, [sketch, params, settings, activePreset]);
+  }, [sketch, params, settings, activePreset, layout]);
 
   /* هنگام تغییر برنامه، هایلایت جی‌کد پاک شود */
   useEffect(() => {
@@ -135,6 +139,34 @@ export default function App() {
   /* کال‌بک‌های پایدار: هویت ثابت تا فرزندهای memo هنگام تیک شبیه‌سازی بازرندر نشوند */
   const onParamsCb = useCallback((patch: Partial<Params>) => setParams((p) => ({ ...p, ...patch })), []);
   const onStrategyCb = useCallback((name: string) => showToast(`استراتژی «${name}» فعال شد`), [showToast]);
+
+  /* ---------- چیدمان داک (پنجره‌ها) ---------- */
+  const setPanel = useCallback((id: PanelId, patch: Partial<PanelState>) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], ...patch } }));
+  }, []);
+  const togglePanel = useCallback((id: PanelId) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], open: !l[id].open } }));
+  }, []);
+  const toggleCollapse = useCallback((id: PanelId) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], collapsed: !l[id].collapsed } }));
+  }, []);
+  const resizePanel = useCallback((id: PanelId, dx: number) => {
+    setLayout((l) => {
+      const max = Math.max(360, window.innerWidth - 560);
+      const size = Math.min(Math.min(MAX_PANEL, max), Math.max(MIN_PANEL, Math.round(l[id].size + dx)));
+      if (size === l[id].size) return l;
+      return { ...l, [id]: { ...l[id], size } };
+    });
+  }, []);
+  const resetPanelSize = useCallback((id: PanelId) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], size: defaultLayout()[id].size } }));
+  }, []);
+  const resetLayout = useCallback(() => {
+    setLayout(defaultLayout());
+    showToast("چیدمان پنجره‌ها بازنشانی شد");
+  }, [showToast]);
+  const panelVis = (id: PanelId): PanelVis =>
+    !layout[id].open ? "closed" : layout[id].collapsed ? "collapsed" : "open";
 
   /* تغییر اسکچ — با commit=false تغییر زنده (کشیدن) و با true ثبت در تاریخچه */
   const onSketchChange = useCallback((next: SketchSeg[], commit: boolean) => {
@@ -253,6 +285,13 @@ export default function App() {
     showToast(`مسیر برشی ${opCount.toLocaleString("fa-IR")} عملیات با ${vertexCount.toLocaleString("fa-IR")} نقطه به DXF تبدیل شد`);
   };
 
+  const editorTitle = mode === "design" ? "طراحی پروفایل" : "شبیه‌سازی تراش";
+  const menuItems: WindowMenuItem[] = [
+    { id: "controls", label: "تنظیمات", vis: panelVis("controls") },
+    { id: "editor", label: editorTitle, vis: panelVis("editor") },
+    { id: "gcode", label: "جی‌کد", vis: panelVis("gcode") },
+  ];
+
   return (
     <div className="flex h-full flex-col">
       {/* ---------- سربرگ ---------- */}
@@ -274,6 +313,8 @@ export default function App() {
         </nav>
 
         <div className="flex items-center gap-1.5">
+          <WindowMenu items={menuItems} onToggle={togglePanel} onReset={resetLayout} />
+          <span className="mx-1 h-5 w-px bg-edge" />
           <button className="btn !px-2 !py-1.5" onClick={undo} disabled={past.current.length === 0} title="واگرد (Ctrl+Z)">
             <IconUndo className="h-4 w-4" />
           </button>
@@ -300,8 +341,16 @@ export default function App() {
       </header>
 
       {/* ---------- بدنه ---------- */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
-        <aside className="order-2 w-full shrink-0 lg:order-1 lg:w-[272px]">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:gap-2 lg:overflow-hidden">
+        <DockPanel
+          title="تنظیمات"
+          icon={<IconLayers className="h-3.5 w-3.5" />}
+          state={layout.controls}
+          onCollapse={() => toggleCollapse("controls")}
+          onClose={() => setPanel("controls", { open: false })}
+          widthPx={layout.controls.size}
+          className="order-2 w-full shrink-0 lg:order-1"
+        >
           <ControlsPanel
             params={params}
             onParams={onParamsCb}
@@ -316,10 +365,27 @@ export default function App() {
             onIsolate={setIsolatedOpId}
             onNotify={showToast}
           />
-        </aside>
+        </DockPanel>
 
-        <main className="order-1 h-[54vh] min-w-0 flex-1 lg:order-2 lg:h-auto">
-          {mode === "design" ? (
+        {panelVis("controls") === "open" && panelVis("editor") === "open" && (
+          <DockSplitter
+            className="lg:order-2"
+            onResize={(dx) => resizePanel("controls", -dx)}
+            onResetSize={() => resetPanelSize("controls")}
+            title="تغییر عرض پنل تنظیمات (دابل‌کلیک: اندازه پیش‌فرض)"
+          />
+        )}
+        {layout.editor.open ? (
+          <DockPanel
+            title={editorTitle}
+            icon={mode === "design" ? <IconPen className="h-3.5 w-3.5" /> : <IconSim className="h-3.5 w-3.5" />}
+            state={layout.editor}
+            onCollapse={() => toggleCollapse("editor")}
+            onClose={() => setPanel("editor", { open: false })}
+            className="order-1 min-w-0 lg:order-3"
+            expandedClassName="h-[54vh] flex-1 lg:h-auto"
+          >
+            {mode === "design" ? (
             <ProfileEditor
               segs={sketch}
               onSegs={onSketchChange}
@@ -340,11 +406,39 @@ export default function App() {
               canRedo={future.current.length > 0}
             />
           ) : (
-            <SimulationView gen={gen} params={params} onActiveLine={setActiveLine} />
-          )}
-        </main>
+              <SimulationView gen={gen} params={params} onActiveLine={setActiveLine} />
+            )}
+          </DockPanel>
+        ) : (
+          <div className="order-1 grid min-h-[220px] flex-1 place-items-center rounded-lg border border-dashed border-edge2 bg-panel/40 p-6 text-center lg:order-3 lg:h-auto">
+            <div>
+              <p className="text-[13px] font-bold text-mute">پنجره ویرایشگر بسته است</p>
+              <p className="mt-1 text-[11.5px] text-dim">از منوی «پنجره» بالای صفحه دوباره بازش کنید</p>
+              <button type="button" className="btn mx-auto mt-3 !px-3 !py-1.5 text-[12px]" onClick={() => setPanel("editor", { open: true })}>
+                باز کردن ویرایشگر
+              </button>
+            </div>
+          </div>
+        )}
 
-        <aside className="order-3 h-[420px] w-full shrink-0 lg:h-auto lg:w-[330px]">
+        {panelVis("editor") === "open" && panelVis("gcode") === "open" && (
+          <DockSplitter
+            className="lg:order-4"
+            onResize={(dx) => resizePanel("gcode", dx)}
+            onResetSize={() => resetPanelSize("gcode")}
+            title="تغییر عرض پنل جی‌کد (دابل‌کلیک: اندازه پیش‌فرض)"
+          />
+        )}
+        <DockPanel
+          title="جی‌کد"
+          icon={<IconCode className="h-3.5 w-3.5" />}
+          state={layout.gcode}
+          onCollapse={() => toggleCollapse("gcode")}
+          onClose={() => setPanel("gcode", { open: false })}
+          widthPx={layout.gcode.size}
+          className="order-3 w-full shrink-0 lg:order-5"
+          expandedClassName="h-[420px] lg:h-auto"
+        >
           <GCodePanel
             gen={gen}
             activeLine={activeLine}
@@ -356,7 +450,7 @@ export default function App() {
                 : undefined
             }
           />
-        </aside>
+        </DockPanel>
       </div>
 
       {/* ---------- توست ---------- */}

@@ -65,6 +65,8 @@ export const IconEye = (p: P) =>
 export const IconEyeOff = (p: P) =>
   base(p, <><path d="M3 3l18 18" /><path d="M10.6 5.2A11 11 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.1 4M6.6 6.6A16.9 16.9 0 0 0 2 12s3.5 7 10 7c1.4 0 2.7-.3 3.9-.8" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></>);
 export const IconX = (p: P) => base(p, <path d="M18 6 6 18M6 6l12 12" />);
+export const IconWindow = (p: P) =>
+  base(p, <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9.5 4v16" /><path d="M3 9.5h6.5" /></>);
 export const IconTool = (p: P) =>
   base(p, <><path d="M12 2.5 20.5 11 12 19.5 3.5 11z" /><circle cx="12" cy="11" r="2.6" /><path d="M12 19.5V23" /></>);
 export const IconCursor = (p: P) =>
