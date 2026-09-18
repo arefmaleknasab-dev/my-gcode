@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GenResult, Op, Params, SegKind, SplitState } from "../lib/lathe";
+import type { GenResult, Op, Params, Sample, SegKind, SplitState } from "../lib/lathe";
 import { OP_INFO } from "../lib/lathe";
 import type { SketchKind, SketchSeg, SnapPoint, SPoint } from "../lib/sketch";
 import {
@@ -39,6 +39,7 @@ import {
   IconLine,
   IconMagnet,
   IconMagnetSm,
+  IconPen,
   IconMinus,
   IconPlus,
   IconQuad,
@@ -52,6 +53,7 @@ import {
 export interface EdSettings {
   snap: number;
   smartSnap: boolean;
+  editMode: boolean; // حالت ادیت — راهنمای افست واقعی + درگِ خطوط لایه‌ها
   showRough: boolean;
   showFinish: boolean;
   showOffset: boolean;
@@ -92,6 +94,7 @@ interface Props {
   onSelected: (ids: number[]) => void;
   params: Params;
   gen: GenResult;
+  onOffsetDist: (v: number) => void;
   split: SplitState;
   onSplit: (s: SplitState) => void;
   settings: EdSettings;
@@ -160,7 +163,7 @@ function LayerMenu({ settings, onSettings }: { settings: EdSettings; onSettings:
   }, [open]);
   const activeN = CHIPS.filter((c) => settings[c.key]).length;
   return (
-    <div ref={ref} className="anim-in absolute top-2.5 right-2.5 z-20">
+    <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
         title="لایه‌های نمایش مسیرها روی بوم"
@@ -241,6 +244,7 @@ export default function ProfileEditor({
   gen,
   split,
   onSplit,
+  onOffsetDist,
   settings,
   onSettings,
   ops,
@@ -256,6 +260,10 @@ export default function ProfileEditor({
   const readoutRef = useRef<HTMLSpanElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [cam, setCam] = useState<Cam | null>(null);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [runHover, setRunHover] = useState<number | null>(null);
+  const [guideHover, setGuideHover] = useState<null | "outer" | "inner">(null);
   const [tool, setTool] = useState<Tool>("select");
   const [draft, setDraft] = useState<SPoint[]>([]);
   /* در منحنی کنترلی، پس از کلیک دوم ابتدا دستهٔ متصل به نقطهٔ پایان (c2) و سپس  */
@@ -400,10 +408,10 @@ export default function ProfileEditor({
         if (draft.length) cancelDraft();
         else if (isolatedOpId != null) onClearIsolate();
         else if (tool !== "select") setTool("select");
-        else {
-          if (selPoints.length) setSelPoints([]);
-          onSelected([]);
-        }
+        else if (selPoints.length) setSelPoints([]);
+        else if (selected.length) onSelected([]);
+        else if (settingsRef.current.editMode) onSettings({ editMode: false });
+        else onSelected([]);
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -891,6 +899,8 @@ export default function ProfileEditor({
     | { mode: "draw"; sx: number; sy: number; cam0: Cam; moved: boolean }
     | { mode: "marquee"; sx: number; sy: number; base: number[]; moved: boolean }
     | { mode: "rwait"; sx: number; sy: number; cam0: Cam; moved: boolean }
+    | { mode: "layer"; ids: number[]; clicked: number; last: SPoint; sx: number; sy: number; moved: boolean }
+    | { mode: "guide"; which: "outer" | "inner"; od0: number; r0: number; moved: boolean }
     | null
   >(null);
 
@@ -937,6 +947,36 @@ export default function ProfileEditor({
       drag.current = { mode: "handle", ref: h, cluster, moved: false };
       return;
     }
+    if (settings.editMode) {
+      /* نزدیک‌ترین هدف برنده است — لایه‌ها روی بوم به‌هم چسبیده‌اند */
+      const loc0 = toLocal(e.clientX, e.clientY);
+      const rin = hitRun(loc0.x, loc0.y);
+      const gd: { which: "inner" | "outer"; d: number } | null = guideData
+        ? (() => {
+            const di = guideData.innerPl.length > 1 ? distToPl(guideData.innerPl, loc0.x, loc0.y) : Infinity;
+            const dox = guideData.outerPl.length > 1 ? distToPl(guideData.outerPl, loc0.x, loc0.y) : Infinity;
+            if (di <= 6 && di <= dox) return { which: "inner" as const, d: di };
+            if (dox <= 6) return { which: "outer" as const, d: dox };
+            return null;
+          })()
+        : null;
+      if (gd && (rin.i < 0 || gd.d <= rin.d + 0.5)) {
+        drag.current = { mode: "guide", which: gd.which, od0: params.offsetDist, r0: raw.r, moved: false };
+        return;
+      }
+      if (rin.i >= 0) {
+        const near = nearestSeg(raw);
+        if (near) {
+          /* درگِ خطِ لایه قفلِ زنجیره ندارد: مفصل‌های هم‌مکان هم با درگ حرکت می‌کنند
+             (مدلِ ویرایشِ جی‌کد) تا پیوستگی مسیر حفظ شود و ویرایشِ موضعی ممکن باشد */
+          const ids = selected.includes(near.id) ? [...selected] : [...selected, near.id];
+          drag.current = { mode: "layer", ids: [...new Set(ids)], clicked: near.id, last: raw, sx: e.clientX, sy: e.clientY, moved: false };
+          setRunHover(null);
+          setHoverId(near.id);
+          return;
+        }
+      }
+    }
     const s = hitSeg(raw);
     if (s) {
       /* المانِ متصل (از یک یا هر دو سر به المان خارج از گروه) قفل است و درگ نمی‌شود */
@@ -970,6 +1010,23 @@ export default function ProfileEditor({
         const s = onHandle ? null : hitSeg(raw);
         setHoverId(s ? s.id : null);
         setSnapHit(null);
+        if (settings.editMode) {
+          const loc = toLocal(e.clientX, e.clientY);
+          let gh: null | "outer" | "inner" = null;
+          if (guideData && !onHandle) {
+            const di = guideData.innerPl.length > 1 ? distToPl(guideData.innerPl, loc.x, loc.y) : Infinity;
+            const dox = guideData.outerPl.length > 1 ? distToPl(guideData.outerPl, loc.x, loc.y) : Infinity;
+            const rhit = !s ? hitRun(loc.x, loc.y) : { i: -1, d: 7 };
+            if (di <= 6 && di <= dox && (rhit.i < 0 || di <= rhit.d + 0.5)) gh = "inner";
+            else if (dox <= 6 && (rhit.i < 0 || dox <= rhit.d + 0.5)) gh = "outer";
+          }
+          setGuideHover(gh);
+          const rin = !gh && !onHandle && !s ? hitRun(loc.x, loc.y) : { i: -1, d: 7 };
+          setRunHover(rin.i >= 0 ? rin.i : null);
+        } else if (runHover != null || guideHover != null) {
+          setRunHover(null);
+          setGuideHover(null);
+        }
       } else if (tool === "split") {
         /* ابزار Split مغناطیسی به پروفیل می‌چسبد */
         setCursor(nearestOnSketch(raw));
@@ -1082,6 +1139,65 @@ export default function ProfileEditor({
       return;
     }
 
+    if (d.mode === "layer") {
+      if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return;
+      if (!d.moved) {
+        d.moved = true;
+        if (e.shiftKey) {
+          if (!d.ids.includes(d.clicked)) d.ids = [...d.ids, d.clicked];
+        } else if (e.ctrlKey || e.metaKey) {
+          d.ids = d.ids.filter((x) => x !== d.clicked);
+          if (!d.ids.length) {
+            drag.current = null;
+            return;
+          }
+        } else if (!d.ids.includes(d.clicked)) {
+          d.ids = [d.clicked];
+        }
+        onSelected([...d.ids]);
+        d.last = raw;
+        return;
+      }
+      const dz = raw.z - d.last.z;
+      const dr = raw.r - d.last.r;
+      d.last = raw;
+      const idset = new Set(d.ids);
+      /* نقاط انتهاییِ المان‌های جابه‌جا شونده که با المانِ خارج از اشتراک دارند →
+         آن نقاط هم (و فقط آن‌ها) با همان δ حرکت می‌کنند */
+      const ptMoves = new Set<string>();
+      for (const id of idset) {
+        const sg0 = segs.find((x) => x.id === id);
+        if (!sg0) continue;
+        for (const part of ["a", "b"] as const) {
+          if (sg0.kind === "line" || sg0[part]) {
+            for (const c of clusterOf(id, part)) if (!idset.has(c.segId)) ptMoves.add(`${c.segId}:${c.part}`);
+          }
+        }
+      }
+      onSegs(
+        segs.map((sg) => {
+          if (idset.has(sg.id)) return moveSeg(sg, dz, dr);
+          let out = sg;
+          for (const key of ptMoves) {
+            const [sid, part] = key.split(":");
+            if (Number(sid) !== sg.id) continue;
+            const cur = out[part as "a" | "b"];
+            if (!cur) continue;
+            out = { ...out, [part]: { z: cur.z + dz, r: cur.r + dr } } as SketchSeg;
+          }
+          return out;
+        }),
+        false
+      );
+      return;
+    }
+    if (d.mode === "guide") {
+      /* درگِ عمود بر محورِ راهنما = تنظیم زندهٔ فاصلهٔ آفست (هر دو آینه با |r| یکی‌شد می‌کنند) */
+      const v = Math.max(0, d.od0 + (Math.abs(raw.r) - Math.abs(d.r0)));
+      onOffsetDist(+v.toFixed(3));
+      d.moved = true;
+      return;
+    }
     if (d.mode === "move") {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return;
       if (!d.moved) {
@@ -1185,7 +1301,7 @@ export default function ProfileEditor({
       return;
     }
 
-    if (d && (d.mode === "handle" || d.mode === "move")) {
+    if (d && (d.mode === "handle" || d.mode === "move" || d.mode === "layer")) {
       if (d.mode === "handle") {
         const ref = d.ref;
         const pkey = (p: { segId: number; part: string }) => `${p.segId}:${p.part}`;
@@ -1304,8 +1420,8 @@ export default function ProfileEditor({
 
   /* ---------- مسیر ابزار ---------- */
   const runs = useMemo(() => {
-    if (!cam) return [] as { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[];
-    const out: { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[] = [];
+    if (!cam) return [] as { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number; pl: [number, number][] }[];
+    const out: { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number; pl: [number, number][] }[] = [];
     let curKind: SegKind | null = null;
     let curOpId = -2;
     let curHolder: 1 | 2 = 1;
@@ -1334,7 +1450,7 @@ export default function ProfileEditor({
           const n = pts.length;
           arrows = arrowHead(pts[n - 2][0], pts[n - 2][1], pts[n - 1][0], pts[n - 1][1]);
         }
-        out.push({ kind: curKind, opId: curOpId, holder: curHolder, d, arrows, sx: pts[0][0], sy: pts[0][1] });
+        out.push({ kind: curKind, opId: curOpId, holder: curHolder, d, arrows, sx: pts[0][0], sy: pts[0][1], pl: pts });
       }
       curKind = null;
       curFan = -1;
@@ -1361,6 +1477,75 @@ export default function ProfileEditor({
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gen.segs, cam]);
+
+  /* ---------- حالت ادیت: راهنمای افست واقعی (بیرون + داخل‌تراشی) ---------- */
+  const guideData = useMemo(() => {
+    if (!cam || !settings.editMode) return null;
+    const plOf = (samples: Sample[]) => samples.map((sm) => screenPt(cam, sm.z, sm.r));
+    const mirror = (pl: [number, number][]) => pl.map(([x, y]) => [x, 2 * cam.oy - y] as [number, number]);
+    const dOf = (pl: [number, number][]) => (pl.length < 2 ? "" : pl.map((pt, i) => `${i ? "L" : "M"} ${pt[0].toFixed(1)} ${pt[1].toFixed(1)}`).join(" "));
+    const outerPl = gen.offsetSamples.length > 1 ? plOf(gen.offsetSamples) : [];
+    const innerPl = gen.innerOffSamples.length > 1 ? plOf(gen.innerOffSamples) : [];
+    const mid = (pl: [number, number][]): [number, number] | null => (pl.length ? pl[Math.floor((pl.length - 1) / 2)] : null);
+    return {
+      outerPl,
+      innerPl,
+      outerD: dOf(outerPl),
+      innerD: dOf(innerPl),
+      outerDm: dOf(mirror(outerPl)),
+      innerDm: dOf(mirror(innerPl)),
+      outerMid: mid(outerPl),
+      innerMid: mid(innerPl),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cam, settings.editMode, gen.offsetSamples, gen.innerOffSamples]);
+
+  const distToPl = (pl: [number, number][], x: number, y: number): number => {
+    let bd = Infinity;
+    for (let i = 0; i + 1 < pl.length; i++) {
+      const [x1, y1] = pl[i];
+      const [x2, y2] = pl[i + 1];
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const l2 = dx * dx + dy * dy;
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / l2)) : 0;
+      const d = Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
+      if (d < bd) bd = d;
+    }
+    return bd;
+  };
+
+  /* نزدیک‌ترین خطِ لایه (بدون رپید و حرکت‌های سیستمی) — فقط در حالت ادیت */
+  const hitRun = (x: number, y: number): { i: number; d: number } => {
+    let bi = -1;
+    let bd = 7;
+    runs.forEach((run, i) => {
+      if (run.kind === "rapid" || run.opId < 0) return;
+      if (!settings[KIND_VISIBLE[run.kind]]) return;
+      if (isolatedOpId != null && run.opId !== isolatedOpId) return;
+      const d = distToPl(run.pl, x, y);
+      if (d < bd) {
+        bd = d;
+        bi = i;
+      }
+    });
+    return { i: bi, d: bd };
+  };
+
+  /* نزدیک‌ترین المان اسکچ به یک نقطهٔ جهانی (بی‌سقفِ تلورانس) — نقشهٔ خطِ لایه به طرح */
+  const nearestSeg = (w: SPoint): SketchSeg | null => {
+    let best: SketchSeg | null = null;
+    let bd = Infinity;
+    for (const sg of segs) {
+      if (!filterAllows(sg.kind) && !selected.includes(sg.id)) continue;
+      const d = distToSeg(sg, w);
+      if (d < bd) {
+        bd = d;
+        best = sg;
+      }
+    }
+    return best;
+  };
 
   const ghostPath = useMemo(() => {
     if (!cam || gen.samples.length < 2) return "";
@@ -1600,6 +1785,27 @@ export default function ProfileEditor({
             );
           })}
         </g>
+
+        {/* حالت ادیت: راهنماهای آفست + هایلایت خطِ لایه زیر نشانگر */}
+        {settings.editMode && (
+          <g style={{ pointerEvents: "none" }}>
+            {guideData?.outerD && <path d={guideData.outerD} fill="none" stroke="#f3c26b" strokeWidth={guideHover === "outer" ? 2.6 : 1.3} strokeOpacity={0.95} strokeDasharray="10 5" strokeLinecap="round" />}
+            {guideData?.outerDm && <path d={guideData.outerDm} fill="none" stroke="#f3c26b" strokeWidth={1.3} strokeOpacity={0.35} strokeDasharray="10 5" />}
+            {guideData?.innerD && <path d={guideData.innerD} fill="none" stroke="#4cc9f0" strokeWidth={guideHover === "inner" ? 2.8 : 1.6} strokeOpacity={0.98} strokeDasharray="3 4" strokeLinecap="round" />}
+            {guideData?.innerDm && <path d={guideData.innerDm} fill="none" stroke="#4cc9f0" strokeWidth={1.4} strokeOpacity={0.4} strokeDasharray="3 4" />}
+            {guideData?.innerMid && (
+              <text x={guideData.innerMid[0]} y={guideData.innerMid[1] - 7} textAnchor="middle" fontSize={9.5} fontWeight={800} fontFamily="Vazirmatn, sans-serif" fill="#4cc9f0" stroke="#120e09" strokeWidth={3} paintOrder="stroke">
+                افست واقعی داخل Δ{params.offsetDist.toFixed(2)}
+              </text>
+            )}
+            {guideData?.outerMid && (
+              <text x={guideData.outerMid[0]} y={guideData.outerMid[1] + 14} textAnchor="middle" fontSize={9} fontWeight={700} fontFamily="Vazirmatn, sans-serif" fill="#f3c26b" stroke="#120e09" strokeWidth={3} paintOrder="stroke" opacity={0.9}>
+                آفست Δ{params.offsetDist.toFixed(2)}
+              </text>
+            )}
+            {runHover != null && runs[runHover] && <path d={runs[runHover].d} fill="none" stroke="#45b394" strokeWidth={3} strokeOpacity={0.9} strokeLinecap="round" strokeLinejoin="round" />}
+          </g>
+        )}
 
         {/* المان‌های اسکچ */}
         <g style={{ opacity: iso ? 0.3 : 1, ...fadeStyle }}>
@@ -2026,7 +2232,22 @@ export default function ProfileEditor({
         </div>
       )}
 
-      <LayerMenu settings={settings} onSettings={onSettings} />
+      <div className="anim-in absolute top-2.5 right-2.5 z-20 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onSettings({ editMode: !settings.editMode })}
+          title="حالت ادیت — نمایش افست واقعی داخل‌تراشی و جابه‌جایی مستقیم همهٔ خطوط لایه‌ها (درگِ خط آبیِ راهنما = تنظیم فاصلهٔ آفست)"
+          className={cn(
+            "chip-toggle border-edge bg-panel/85 backdrop-blur-sm transition-all hover:border-edge2",
+            settings.editMode ? "!border-teal/70 text-teal shadow-[0_0_10px_rgba(69,179,148,0.35)]" : "text-ink"
+          )}
+        >
+          <IconPen className="h-3.5 w-3.5" />
+          حالت ادیت
+          {settings.editMode && <span className="h-1.5 w-1.5 rounded-full bg-teal" />}
+        </button>
+        <LayerMenu settings={settings} onSettings={onSettings} />
+      </div>
 
       {/* ---------- بازرس هندسی ---------- */}
       {one && tool === "select" && (

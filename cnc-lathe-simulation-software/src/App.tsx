@@ -51,6 +51,7 @@ export default function App() {
     return {
       snap: s?.snap ?? 1,
       smartSnap: s?.smartSnap ?? true,
+      editMode: s?.editMode ?? false,
       showRough: s?.showRough ?? true,
       showFinish: s?.showFinish ?? true,
       showOffset: s?.showOffset ?? true,
@@ -396,6 +397,7 @@ export default function App() {
               split={params.split}
               onSplit={(s) => setParams((p) => ({ ...p, split: s }))}
               settings={settings}
+              onOffsetDist={(v) => setParams((pp) => ({ ...pp, offsetDist: Math.max(0, Math.min(50, +v.toFixed(3))) }))}
               onSettings={(patch) => setSettings((s) => ({ ...s, ...patch }))}
               ops={params.ops}
               isolatedOpId={isolatedOpId}
