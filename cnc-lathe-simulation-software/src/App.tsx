@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ControlsPanel from "./components/ControlsPanel";
+import { DockPanel, DockSplitter, MAX_PANEL, MIN_PANEL, WindowMenu, defaultLayout, normalizeLayout } from "./components/Dock";
+import type { LayoutState, PanelId, PanelState, PanelVis, WindowMenuItem } from "./components/Dock";
 import GCodePanel from "./components/GCodePanel";
 import ProfileEditor, { type EdSettings } from "./components/ProfileEditor";
 import SimulationView from "./components/SimulationView";
-import { IconCheck, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
+import { IconCheck, IconCode, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
 import { buildDxf } from "./lib/dxf";
-import { PRESETS, generate, normalizeParams, presetPoints } from "./lib/lathe";
+import { PRESETS, STRATEGIES, generate, makeOps, normalizeParams, presetPoints } from "./lib/lathe";
 import type { Params, PPoint, Preset } from "./lib/lathe";
 import type { SketchSeg } from "./lib/sketch";
-import { flattenSketch, normalizeSketch, sketchFromPoints } from "./lib/sketch";
+import { autoSplitPoint, branchPoints, chainPolyline, flattenSketch, normalizeSketch, orderChain, sketchFromPoints, sketchFromWall, splitChainAt } from "./lib/sketch";
 import { cn } from "./utils/cn";
 
 const STORE_KEY = "kharraatcode-v1";
@@ -18,11 +20,12 @@ interface Saved {
   sketch?: SketchSeg[];
   params?: Partial<Params>;
   settings?: Partial<EdSettings>;
+  layout?: LayoutState;
   activePreset?: string | null;
   version?: number;
 }
 
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 5;
 
 let SAVED: Saved | null = null;
 try {
@@ -33,7 +36,7 @@ try {
 }
 
 /* داده‌های پیش از نسخه ۲: عملیات «spring» و «offset» معنای متفاوتی داشتند */
-const IS_LEGACY = !SAVED || !SAVED.version || SAVED.version < SAVE_VERSION;
+const IS_LEGACY = !SAVED || !SAVED.version || SAVED.version < 3;
 
 export default function App() {
   const [sketch, setSketch] = useState<SketchSeg[]>(() => {
@@ -51,12 +54,15 @@ export default function App() {
       showRough: s?.showRough ?? true,
       showFinish: s?.showFinish ?? true,
       showOffset: s?.showOffset ?? true,
+      showBore: s?.showBore ?? true,
       showRound: s?.showRound ?? true,
       showFace: s?.showFace ?? true,
+      showBottom: s?.showBottom ?? true,
       showRapids: s?.showRapids ?? true,
       showGhost: s?.showGhost ?? true,
     };
   });
+  const [layout, setLayout] = useState<LayoutState>(() => normalizeLayout(SAVED?.layout));
   const [mode, setMode] = useState<"design" | "sim">("design");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [activePreset, setActivePreset] = useState<string | null>(SAVED?.activePreset ?? PRESETS[0].id);
@@ -69,22 +75,34 @@ export default function App() {
   const future = useRef<SketchSeg[][]>([]);
   const toastTimer = useRef<number | null>(null);
 
-  /* پروفایل نقطه‌ای برای موتور تراش — از اسکچ تخت می‌شود */
-  const points = useMemo<PPoint[]>(
-    () => flattenSketch(sketch, params.blankD / 2, params.blankL),
-    [sketch, params.blankD, params.blankL]
-  );
+  /* پروفایل نقطه‌ای برای موتور تراش — حالت عادی تخت، حالت کاسه دوشاخه (Split) */
+  const { points, innerPoints, splitInfo } = useMemo(() => {
+    const blankR = params.blankD / 2;
+    if (params.split.enabled) {
+      const poly = chainPolyline(orderChain(sketch));
+      if (poly.length >= 3) {
+        const sp = splitChainAt(poly, { z: params.split.z, r: params.split.r });
+        return {
+          points: branchPoints(sp.outer, blankR, params.blankL, "max"),
+          innerPoints: branchPoints(sp.inner, blankR, params.blankL, "min"),
+          splitInfo: { outerDir: sp.outerDir, innerDir: sp.innerDir, at: sp.splitAt },
+        };
+      }
+    }
+    const none: { outerDir: 1 | -1; innerDir: 1 | -1; at: { z: number; r: number } } | null = null;
+    return { points: flattenSketch(sketch, blankR, params.blankL), innerPoints: [] as PPoint[], splitInfo: none };
+  }, [sketch, params.split, params.blankD, params.blankL]);
 
-  const gen = useMemo(() => generate(points, params), [points, params]);
+  const gen = useMemo(() => generate(points, params, innerPoints), [points, params, innerPoints]);
 
   /* ذخیره محلی */
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, version: SAVE_VERSION }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, layout, version: SAVE_VERSION }));
     } catch {
       /* ignore */
     }
-  }, [sketch, params, settings, activePreset]);
+  }, [sketch, params, settings, activePreset, layout]);
 
   /* هنگام تغییر برنامه، هایلایت جی‌کد پاک شود */
   useEffect(() => {
@@ -112,14 +130,46 @@ export default function App() {
     setHistVer((v) => v + 1);
   };
 
-  const showToast = (msg: string, kind: "ok" | "warn" = "ok") => {
+  const showToast = useCallback((msg: string, kind: "ok" | "warn" = "ok") => {
     setToast({ msg, kind });
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 2400);
-  };
+  }, []);
+
+  /* کال‌بک‌های پایدار: هویت ثابت تا فرزندهای memo هنگام تیک شبیه‌سازی بازرندر نشوند */
+  const onParamsCb = useCallback((patch: Partial<Params>) => setParams((p) => ({ ...p, ...patch })), []);
+  const onStrategyCb = useCallback((name: string) => showToast(`استراتژی «${name}» فعال شد`), [showToast]);
+
+  /* ---------- چیدمان داک (پنجره‌ها) ---------- */
+  const setPanel = useCallback((id: PanelId, patch: Partial<PanelState>) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], ...patch } }));
+  }, []);
+  const togglePanel = useCallback((id: PanelId) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], open: !l[id].open } }));
+  }, []);
+  const toggleCollapse = useCallback((id: PanelId) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], collapsed: !l[id].collapsed } }));
+  }, []);
+  const resizePanel = useCallback((id: PanelId, dx: number) => {
+    setLayout((l) => {
+      const max = Math.max(360, window.innerWidth - 560);
+      const size = Math.min(Math.min(MAX_PANEL, max), Math.max(MIN_PANEL, Math.round(l[id].size + dx)));
+      if (size === l[id].size) return l;
+      return { ...l, [id]: { ...l[id], size } };
+    });
+  }, []);
+  const resetPanelSize = useCallback((id: PanelId) => {
+    setLayout((l) => ({ ...l, [id]: { ...l[id], size: defaultLayout()[id].size } }));
+  }, []);
+  const resetLayout = useCallback(() => {
+    setLayout(defaultLayout());
+    showToast("چیدمان پنجره‌ها بازنشانی شد");
+  }, [showToast]);
+  const panelVis = (id: PanelId): PanelVis =>
+    !layout[id].open ? "closed" : layout[id].collapsed ? "collapsed" : "open";
 
   /* تغییر اسکچ — با commit=false تغییر زنده (کشیدن) و با true ثبت در تاریخچه */
-  const onSketchChange = (next: SketchSeg[], commit: boolean) => {
+  const onSketchChange = useCallback((next: SketchSeg[], commit: boolean) => {
     if (commit) {
       past.current.push(commitRef.current ?? sketch);
       commitRef.current = null;
@@ -131,27 +181,89 @@ export default function App() {
     }
     setSketch(next);
     setHistVer((v) => v + 1);
-  };
+  }, [sketch]);
 
-  const applyPreset = (p: Preset) => {
-    onSketchChange(sketchFromPoints(presetPoints(p)), true);
-    setParams((prev) => ({ ...prev, blankD: p.blankD, blankL: p.blankL }));
+  const applyPreset = useCallback((p: Preset) => {
+    if (p.wall) {
+      /* کاسه: دیواره به ترتیب مسیر (خارج ← لبه ← داخل) ساخته می‌شود */
+      onSketchChange(
+        sketchFromWall(p.wall.map(([z, r, smooth]) => ({ z, r, smooth }))),
+        true
+      );
+    } else {
+      onSketchChange(sketchFromPoints(presetPoints(p)), true);
+    }
+    setParams((prev) => {
+      const next: Params = { ...prev, blankD: p.blankD, blankL: p.blankL };
+      if (p.shape) next.blankShape = p.shape;
+      next.split = p.split
+        ? { enabled: true, z: p.split.z, r: p.split.r }
+        : { ...prev.split, enabled: false };
+      if (p.strategy) {
+        const st = STRATEGIES.find((s) => s.id === p.strategy);
+        if (st) next.ops = makeOps(st.types);
+      }
+      return next;
+    });
     setActivePreset(p.id);
     setSelectedIds([]);
-    showToast(`پیش‌تنظیم «${p.name}» اعمال شد`);
-  };
+    showToast(
+      p.strategy === "bowl"
+        ? `پیش‌تنظیم «${p.name}» + استراتژی داخل/خارج فعال شد`
+        : `پیش‌تنظیم «${p.name}» اعمال شد`
+    );
+  }, [onSketchChange, showToast]);
+
+  /* قرار دادن خودکار نقطه Split روی لبه (بیشترین X زنجیره) */
+  const autoSplit = useCallback(() => {
+    const poly = chainPolyline(orderChain(sketch));
+    const auto = autoSplitPoint(poly);
+    if (auto) {
+      setParams((prev) => ({ ...prev, split: { ...prev.split, enabled: true, z: auto.z, r: auto.r } }));
+      showToast(`نقطه Split روی لبه قرار گرفت (X ${auto.z} • ⌀ ${(auto.r * 2).toFixed(1)})`);
+    } else {
+      showToast("زنجیره پروفیل برای Split خودکار کافی نیست", "warn");
+    }
+  }, [sketch, showToast]);
+
+  /* متن جی‌کد با پایان‌خط CRLF (سازگار با CIMCO/ویندوز و کنترلرها) */
+  const gcodeText = () => gen.lines.join("\r\n");
 
   const copyGCode = async () => {
-    const text = gen.lines.join("\n");
+    const text = gcodeText();
+    /* ۱) Clipboard API مدرن — روی http یا داخل iframe ممکن است در دسترس نباشد */
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast("جی‌کد در کلیپ‌بورد کپی شد");
+        return;
+      }
+    } catch {
+      /* ادامه به fallback */
+    }
+    /* ۲) fallback: textarea موقت + execCommand (روی http هم کار می‌کند) */
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-9999px";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (!ok) throw new Error("copy-failed");
       showToast("جی‌کد در کلیپ‌بورد کپی شد");
     } catch {
       showToast("کپی ممکن نشد — فایل را دانلود کنید", "warn");
     }
   };
   const downloadGCode = () => {
-    const blob = new Blob([gen.lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([gcodeText()], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -173,10 +285,17 @@ export default function App() {
     showToast(`مسیر برشی ${opCount.toLocaleString("fa-IR")} عملیات با ${vertexCount.toLocaleString("fa-IR")} نقطه به DXF تبدیل شد`);
   };
 
+  const editorTitle = mode === "design" ? "طراحی پروفایل" : "شبیه‌سازی تراش";
+  const menuItems: WindowMenuItem[] = [
+    { id: "controls", label: "تنظیمات", vis: panelVis("controls") },
+    { id: "editor", label: editorTitle, vis: panelVis("editor") },
+    { id: "gcode", label: "جی‌کد", vis: panelVis("gcode") },
+  ];
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col @container">
       {/* ---------- سربرگ ---------- */}
-      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge bg-panel/85 px-3.5 py-2 backdrop-blur">
+      <header className="relative z-40 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge bg-panel/85 px-3.5 py-2 backdrop-blur">
         <div className="flex items-center gap-2.5">
           <span className="grid h-9 w-9 place-items-center rounded-lg border border-brass/40 bg-gradient-to-b from-panel3 to-panel text-brass shadow-[0_0_18px_rgba(227,169,78,0.18)]">
             <IconSpindle className="h-5 w-5" />
@@ -194,6 +313,8 @@ export default function App() {
         </nav>
 
         <div className="flex items-center gap-1.5">
+          <WindowMenu items={menuItems} onToggle={togglePanel} onReset={resetLayout} />
+          <span className="mx-1 h-5 w-px bg-edge" />
           <button className="btn !px-2 !py-1.5" onClick={undo} disabled={past.current.length === 0} title="واگرد (Ctrl+Z)">
             <IconUndo className="h-4 w-4" />
           </button>
@@ -220,23 +341,51 @@ export default function App() {
       </header>
 
       {/* ---------- بدنه ---------- */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
-        <aside className="order-2 w-full shrink-0 lg:order-1 lg:w-[272px]">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 @4xl:flex-row @4xl:gap-2 @4xl:overflow-hidden">
+        <DockPanel
+          title="تنظیمات"
+          icon={<IconLayers className="h-3.5 w-3.5" />}
+          state={layout.controls}
+          onCollapse={() => toggleCollapse("controls")}
+          onClose={() => setPanel("controls", { open: false })}
+          widthPx={layout.controls.size}
+          className="order-2 w-full shrink-0 @4xl:order-1"
+        >
           <ControlsPanel
             params={params}
-            onParams={(patch) => setParams((p) => ({ ...p, ...patch }))}
+            onParams={onParamsCb}
             points={points}
+            innerPoints={innerPoints}
+            splitInfo={splitInfo}
+            onAutoSplit={autoSplit}
             activePreset={activePreset}
             onApplyPreset={applyPreset}
-            onStrategy={(name) => showToast(`استراتژی «${name}» فعال شد`)}
+            onStrategy={onStrategyCb}
             isolatedOpId={isolatedOpId}
             onIsolate={setIsolatedOpId}
             onNotify={showToast}
           />
-        </aside>
+        </DockPanel>
 
-        <main className="order-1 h-[54vh] min-w-0 flex-1 lg:order-2 lg:h-auto">
-          {mode === "design" ? (
+        {panelVis("controls") === "open" && panelVis("editor") === "open" && (
+          <DockSplitter
+            className="@4xl:order-2"
+            onResize={(dx) => resizePanel("controls", -dx)}
+            onResetSize={() => resetPanelSize("controls")}
+            title="تغییر عرض پنل تنظیمات (دابل‌کلیک: اندازه پیش‌فرض)"
+          />
+        )}
+        {layout.editor.open ? (
+          <DockPanel
+            title={editorTitle}
+            icon={mode === "design" ? <IconPen className="h-3.5 w-3.5" /> : <IconSim className="h-3.5 w-3.5" />}
+            state={layout.editor}
+            onCollapse={() => toggleCollapse("editor")}
+            onClose={() => setPanel("editor", { open: false })}
+            className="order-1 min-w-0 @4xl:order-3"
+            expandedClassName="h-[54vh] flex-1 @4xl:h-auto"
+          >
+            {mode === "design" ? (
             <ProfileEditor
               segs={sketch}
               onSegs={onSketchChange}
@@ -244,6 +393,8 @@ export default function App() {
               onSelected={setSelectedIds}
               params={params}
               gen={gen}
+              split={params.split}
+              onSplit={(s) => setParams((p) => ({ ...p, split: s }))}
               settings={settings}
               onSettings={(patch) => setSettings((s) => ({ ...s, ...patch }))}
               ops={params.ops}
@@ -255,13 +406,41 @@ export default function App() {
               canRedo={future.current.length > 0}
             />
           ) : (
-            <SimulationView gen={gen} params={params} onActiveLine={setActiveLine} />
-          )}
-        </main>
+              <SimulationView gen={gen} params={params} onActiveLine={setActiveLine} />
+            )}
+          </DockPanel>
+        ) : (
+          <div className="order-1 grid min-h-[220px] flex-1 place-items-center rounded-lg border border-dashed border-edge2 bg-panel/40 p-6 text-center @4xl:order-3 @4xl:h-auto">
+            <div>
+              <p className="text-[13px] font-bold text-mute">پنجره ویرایشگر بسته است</p>
+              <p className="mt-1 text-[11.5px] text-dim">از منوی «پنجره» بالای صفحه دوباره بازش کنید</p>
+              <button type="button" className="btn mx-auto mt-3 !px-3 !py-1.5 text-[12px]" onClick={() => setPanel("editor", { open: true })}>
+                باز کردن ویرایشگر
+              </button>
+            </div>
+          </div>
+        )}
 
-        <aside className="order-3 h-[420px] w-full shrink-0 lg:h-auto lg:w-[330px]">
-          <GCodePanel gen={gen} activeLine={activeLine} onCopy={copyGCode} onDownload={downloadGCode} />
-        </aside>
+        {panelVis("editor") === "open" && panelVis("gcode") === "open" && (
+          <DockSplitter
+            className="@4xl:order-4"
+            onResize={(dx) => resizePanel("gcode", dx)}
+            onResetSize={() => resetPanelSize("gcode")}
+            title="تغییر عرض پنل جی‌کد (دابل‌کلیک: اندازه پیش‌فرض)"
+          />
+        )}
+        <DockPanel
+          title="جی‌کد"
+          icon={<IconCode className="h-3.5 w-3.5" />}
+          state={layout.gcode}
+          onCollapse={() => toggleCollapse("gcode")}
+          onClose={() => setPanel("gcode", { open: false })}
+          widthPx={layout.gcode.size}
+          className="order-3 w-full shrink-0 @4xl:order-5"
+          expandedClassName="h-[420px] @4xl:h-auto"
+        >
+          <GCodePanel gen={gen} activeLine={activeLine} />
+        </DockPanel>
       </div>
 
       {/* ---------- توست ---------- */}

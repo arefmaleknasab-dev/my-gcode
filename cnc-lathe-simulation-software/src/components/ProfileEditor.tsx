@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GenResult, Op, Params, SegKind } from "../lib/lathe";
+import type { GenResult, Op, Params, SegKind, SplitState } from "../lib/lathe";
 import { OP_INFO } from "../lib/lathe";
 import type { SketchKind, SketchSeg, SnapPoint, SPoint } from "../lib/sketch";
 import {
   arcRadius,
   arcWithRadius,
+  chainPolyline,
   cloneSeg,
   defaultCubicHandles,
   dist,
@@ -16,10 +17,13 @@ import {
   makeSeg,
   moveSeg,
   newSegId,
+  orderChain,
   segLength,
+  segMid,
   segPoints,
   SNAP_FA,
   snapCandidates,
+  splitChainAt,
 } from "../lib/sketch";
 import { cn } from "../utils/cn";
 import {
@@ -31,6 +35,7 @@ import {
   IconCursor,
   IconFit,
   IconHand,
+  IconLayers,
   IconLine,
   IconMagnet,
   IconMagnetSm,
@@ -38,6 +43,7 @@ import {
   IconPlus,
   IconQuad,
   IconRedo,
+  IconSplit,
   IconTrash,
   IconUndo,
   IconX,
@@ -49,13 +55,15 @@ export interface EdSettings {
   showRough: boolean;
   showFinish: boolean;
   showOffset: boolean;
+  showBore: boolean;
   showRound: boolean;
   showFace: boolean;
+  showBottom: boolean;
   showRapids: boolean;
   showGhost: boolean;
 }
 
-type Tool = "select" | "line" | "quad" | "cubic" | "arc";
+type Tool = "select" | "line" | "quad" | "cubic" | "arc" | "split";
 
 const TOOLS: { id: Tool; name: string; key: string; icon: React.ReactNode; hint: string }[] = [
   { id: "select", name: "انتخاب", key: "V", icon: <IconCursor className="h-4 w-4" />, hint: "کلیک تکی، باکس انتخابگر چپ‌به‌راست (فقط داخل) و راست‌به‌چپ (متقاطع)، Shift افزودن، Ctrl حذف، دابل‌کلیک زنجیره" },
@@ -63,9 +71,10 @@ const TOOLS: { id: Tool; name: string; key: string; icon: React.ReactNode; hint:
   { id: "quad", name: "منحنی", key: "C", icon: <IconQuad className="h-4 w-4" />, hint: "منحنی ساده: شروع، پایان، یک نقطهٔ کنترل" },
   { id: "cubic", name: "منحنی کنترلی", key: "B", icon: <IconCubic className="h-4 w-4" />, hint: "منحنی پیشرفته: شروع، پایان، سپس دستهٔ خروج از پایان و دستهٔ ورود به شروع" },
   { id: "arc", name: "کمان", key: "A", icon: <IconArc3 className="h-4 w-4" />, hint: "کمان سه‌نقطه‌ای: شروع، پایان، نقطه‌ای روی کمان" },
+  { id: "split", name: "نقطه Split", key: "S", icon: <IconSplit className="h-4 w-4" />, hint: "قرار دادن نقطه تعیین‌کننده داخل/خارج روی پروفیل" },
 ];
 
-const NEED_PTS: Record<Tool, number> = { select: 0, line: 2, quad: 3, cubic: 4, arc: 3 };
+const NEED_PTS: Record<Tool, number> = { select: 0, line: 2, quad: 3, cubic: 4, arc: 3, split: 1 };
 
 const STEP_HINT: Record<Tool, string[]> = {
   select: [],
@@ -73,6 +82,7 @@ const STEP_HINT: Record<Tool, string[]> = {
   quad: ["نقطهٔ شروع", "نقطهٔ پایان", "نقطهٔ کنترل منحنی"],
   cubic: ["نقطهٔ شروع", "نقطهٔ پایان", "دستهٔ خروج از پایان", "دستهٔ ورود به شروع"],
   arc: ["نقطهٔ شروع کمان", "نقطهٔ پایان کمان", "نقطه‌ای روی کمان"],
+  split: ["کلیک روی پروفیل برای قرار دادن نقطه Split"],
 };
 
 interface Props {
@@ -82,6 +92,8 @@ interface Props {
   onSelected: (ids: number[]) => void;
   params: Params;
   gen: GenResult;
+  split: SplitState;
+  onSplit: (s: SplitState) => void;
   settings: EdSettings;
   onSettings: (patch: Partial<EdSettings>) => void;
   ops: Op[];
@@ -108,19 +120,92 @@ const SEG_COLOR: Record<SegKind, string> = {
   face: "#e3a94e",
   finish: "#e0703c",
   offset: "#f59a80",
+  bore: "#4cc9f0",
+  borefin: "#f72585",
+  bottom: "#ffd166",
 };
 
-type LayerKey = "showRough" | "showFinish" | "showOffset" | "showRound" | "showFace" | "showRapids" | "showGhost";
+type LayerKey = "showRough" | "showFinish" | "showOffset" | "showBore" | "showRound" | "showFace" | "showBottom" | "showRapids" | "showGhost";
 
 const CHIPS: { key: LayerKey; label: string; color: string }[] = [
   { key: "showRound", label: "گرد کردن", color: "#b48ee0" },
   { key: "showRough", label: "مسیر خشن", color: "#45b394" },
+  { key: "showBore", label: "داخل‌تراشی", color: "#4cc9f0" },
   { key: "showOffset", label: "آفست", color: "#f59a80" },
   { key: "showFinish", label: "پرداخت", color: "#e0703c" },
   { key: "showFace", label: "پیشانی", color: "#e3a94e" },
+  { key: "showBottom", label: "کف‌تراشی", color: "#ffd166" },
   { key: "showRapids", label: "حرکت سریع", color: "#93a1ad" },
   { key: "showGhost", label: "سایه طرح", color: "#c9955a" },
 ];
+
+/* منوی کرکره‌ای لایه‌های نمایش — جایگزین نوار چیپ‌های افقی */
+function LayerMenu({ settings, onSettings }: { settings: EdSettings; onSettings: (p: Partial<EdSettings>) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const activeN = CHIPS.filter((c) => settings[c.key]).length;
+  return (
+    <div ref={ref} className="anim-in absolute top-2.5 right-2.5 z-20">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="لایه‌های نمایش مسیرها روی بوم"
+        className="chip-toggle border-edge bg-panel/85 text-ink backdrop-blur-sm transition-all hover:border-edge2"
+      >
+        <IconLayers className="h-3.5 w-3.5 text-brass" />
+        لایه‌ها
+        <span className={cn("rounded-full border px-1 font-mono text-[9px] font-bold", activeN === CHIPS.length ? "border-teal/50 text-teal" : "border-edge2 text-mute")}>
+          {activeN}/{CHIPS.length}
+        </span>
+        <svg
+          viewBox="0 0 12 12"
+          className={cn("h-2 w-2 text-dim transition-transform", open && "-rotate-180")}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.8}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M2 4l4 4 4-4" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute top-[calc(100%+6px)] right-0 w-52 rounded-lg border border-edge bg-panel/95 p-1.5 shadow-xl shadow-black/50 backdrop-blur">
+          <div className="px-2 pt-0.5 pb-1 text-[10px] font-bold text-dim">نمایش مسیرهای عملیات روی بوم</div>
+          {CHIPS.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => onSettings({ [c.key]: !settings[c.key] } as Partial<EdSettings>)}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-right text-[11.5px] transition-colors hover:bg-panel3"
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: c.color, opacity: settings[c.key] ? 1 : 0.25 }} />
+              <span className={cn("flex-1 truncate", settings[c.key] ? "text-ink/85" : "text-dim")}>{c.label}</span>
+              {settings[c.key] ? (
+                <IconCheck className="h-3.5 w-3.5 shrink-0 text-teal" />
+              ) : (
+                <span className="h-3 w-3 shrink-0 rounded-[4px] border border-edge2" />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const KIND_VISIBLE: Record<SegKind, LayerKey> = {
   rapid: "showRapids",
@@ -131,6 +216,9 @@ const KIND_VISIBLE: Record<SegKind, LayerKey> = {
   face: "showFace",
   finish: "showFinish",
   offset: "showOffset",
+  bore: "showBore",
+  borefin: "showBore",
+  bottom: "showBottom",
 };
 
 const SNAP_STEPS = [1, 0.5, 5, 0];
@@ -151,6 +239,8 @@ export default function ProfileEditor({
   onSelected,
   params,
   gen,
+  split,
+  onSplit,
   settings,
   onSettings,
   ops,
@@ -422,6 +512,46 @@ export default function ProfileEditor({
     }
     return best;
   };
+
+  /* نزدیک‌ترین نقطه روی پروفیل (برای ابزار Split) */
+  const nearestOnSketch = (w: SPoint): SPoint | null => {
+    let best: SPoint | null = null;
+    let bestD = Infinity;
+    for (const s of segs) {
+      const pts = s.kind === "line" ? [s.a, s.b] : segPoints(s, 40);
+      for (const p of pts) {
+        const d = dist(p, w);
+        if (d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+    }
+    return best ? clampPt({ ...best }) : null;
+  };
+
+  /* سمت هر المان نسبت به نقطه Split (خارج/داخل) — برای رنگ‌آمیزی شاخه‌ها */
+  const segSide = useMemo(() => {
+    const m = new Map<number, "outer" | "inner">();
+    if (!split.enabled || segs.length === 0) return m;
+    const poly = chainPolyline(orderChain(segs));
+    if (poly.length < 3) return m;
+    const sp = splitChainAt(poly, { z: split.z, r: split.r });
+    for (const s of segs) {
+      const mid = segMid(s);
+      let bi = 0;
+      let bd = Infinity;
+      poly.forEach((p, i) => {
+        const d = dist(p, mid);
+        if (d < bd) {
+          bd = d;
+          bi = i;
+        }
+      });
+      m.set(s.id, bi <= sp.splitIndex ? "outer" : "inner");
+    }
+    return m;
+  }, [segs, split]);
 
   type HandleRef = { segId: number; part: "a" | "b" | "c1" | "c2" | "via" };
   const hitHandle = (w: SPoint): HandleRef | null => {
@@ -840,6 +970,10 @@ export default function ProfileEditor({
         const s = onHandle ? null : hitSeg(raw);
         setHoverId(s ? s.id : null);
         setSnapHit(null);
+      } else if (tool === "split") {
+        /* ابزار Split مغناطیسی به پروفیل می‌چسبد */
+        setCursor(nearestOnSketch(raw));
+        setSnapHit(null);
       } else {
         const { p, hit } = applySnap(raw);
         setCursor(clampPt(p));
@@ -889,6 +1023,9 @@ export default function ProfileEditor({
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 4) {
         d.moved = true;
         setCam({ s: d.cam0.s, ox: d.cam0.ox + (e.clientX - d.sx), oy: d.cam0.oy + (e.clientY - d.sy) });
+      } else if (tool === "split") {
+        setCursor(nearestOnSketch(raw));
+        setSnapHit(null);
       } else {
         const { p, hit } = applySnap(raw);
         setCursor(clampPt(p));
@@ -1082,6 +1219,12 @@ export default function ProfileEditor({
     }
 
     if (tool !== "select" && (!d || ((d.mode === "draw" || d.mode === "pan") && !d.moved))) {
+      /* ابزار Split: قرار دادن نقطه تعیین‌کننده روی پروفیل */
+      if (tool === "split") {
+        const hit = nearestOnSketch(toWorld(e.clientX, e.clientY));
+        if (hit) onSplit({ enabled: true, z: Math.round(hit.z * 10) / 10, r: Math.round(hit.r * 10) / 10 });
+        return;
+      }
       /* افزودن نقطهٔ جدید به ترسیم در حال انجام */
       const { p } = applySnap(toWorld(e.clientX, e.clientY));
       const pt = clampPt(p);
@@ -1161,11 +1304,21 @@ export default function ProfileEditor({
 
   /* ---------- مسیر ابزار ---------- */
   const runs = useMemo(() => {
-    if (!cam) return [] as { kind: SegKind; opId: number; d: string; arrows: string }[];
-    const out: { kind: SegKind; opId: number; d: string; arrows: string }[] = [];
+    if (!cam) return [] as { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[];
+    const out: { kind: SegKind; opId: number; holder: 1 | 2; d: string; arrows: string; sx: number; sy: number }[] = [];
     let curKind: SegKind | null = null;
     let curOpId = -2;
+    let curHolder: 1 | 2 = 1;
+    let curFan = -1; // گسترش G0 این ران (از جی‌کد) — تغییر آن ران را می‌شکافد
+    let curFanU = 0; // گسترش محوری این ران — تغییر آن هم ران را می‌شکافد (پله مورب پنهان)
     let pts: [number, number][] = [];
+    const arrowHead = (x1: number, y1: number, x2: number, y2: number) => {
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      if (len < 7) return "";
+      const ux = (x2 - x1) / len;
+      const uy = (y2 - y1) / len;
+      return `M ${(x2 + ux * 2).toFixed(1)} ${(y2 + uy * 2).toFixed(1)} L ${(x2 - ux * 6.5 - uy * 4).toFixed(1)} ${(y2 - uy * 6.5 + ux * 4).toFixed(1)} L ${(x2 - ux * 6.5 + uy * 4).toFixed(1)} ${(y2 - uy * 6.5 - ux * 4).toFixed(1)} Z `;
+    };
     const flush = () => {
       if (curKind && pts.length > 1) {
         let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
@@ -1174,29 +1327,35 @@ export default function ProfileEditor({
         if (curKind !== "rapid") {
           const step = Math.max(1, Math.ceil((pts.length - 1) / 6));
           for (let i = step; i < pts.length - 1; i += step) {
-            const [x1, y1] = pts[i - 1];
-            const [x2, y2] = pts[i];
-            const len = Math.hypot(x2 - x1, y2 - y1);
-            if (len < 7) continue;
-            const ux = (x2 - x1) / len;
-            const uy = (y2 - y1) / len;
-            arrows += `M ${(x2 + ux * 2).toFixed(1)} ${(y2 + uy * 2).toFixed(1)} L ${(x2 - ux * 6.5 - uy * 4).toFixed(1)} ${(y2 - uy * 6.5 + ux * 4).toFixed(1)} L ${(x2 - ux * 6.5 + uy * 4).toFixed(1)} ${(y2 - uy * 6.5 - ux * 4).toFixed(1)} Z `;
+            arrows += arrowHead(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
           }
+        } else if ((curFan > 0 || curFanU !== 0) && pts.length >= 2) {
+          /* حرکت سریعِ گسترده‌شده در جی‌کد: پیکان جهت در انتها */
+          const n = pts.length;
+          arrows = arrowHead(pts[n - 2][0], pts[n - 2][1], pts[n - 1][0], pts[n - 1][1]);
         }
-        out.push({ kind: curKind, opId: curOpId, d, arrows });
+        out.push({ kind: curKind, opId: curOpId, holder: curHolder, d, arrows, sx: pts[0][0], sy: pts[0][1] });
       }
       curKind = null;
+      curFan = -1;
+      curFanU = 0;
       pts = [];
     };
     for (const sg of gen.segs) {
       const kind: SegKind = sg.motion === 0 ? "rapid" : sg.kind;
-      if (kind !== curKind || sg.opId !== curOpId) {
+      /* آفست نمایشی = همان گسترش جی‌کد (فقط قطر، فقط حرکت سریع) */
+      const fan = kind === "rapid" ? sg.fan ?? 0 : 0;
+      const fanU = kind === "rapid" ? sg.fanU ?? 0 : 0;
+      if (kind !== curKind || sg.opId !== curOpId || sg.holder !== curHolder || fan !== curFan || fanU !== curFanU) {
         flush();
         curKind = kind;
         curOpId = sg.opId;
-        pts = [screenPt(cam, sg.z1, sg.x1 / 2)];
+        curHolder = sg.holder;
+        curFan = fan;
+        curFanU = fanU;
+        pts = [screenPt(cam, sg.z1 + fanU, (sg.x1 + fan) / 2)];
       }
-      pts.push(screenPt(cam, sg.z2, sg.x2 / 2));
+      pts.push(screenPt(cam, sg.z2 + fanU, (sg.x2 + fan) / 2));
     }
     flush();
     return out;
@@ -1217,6 +1376,21 @@ export default function ProfileEditor({
     return d + "Z";
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gen.samples, cam]);
+
+  const innerGhost = useMemo(() => {
+    if (!cam || gen.innerSamples.length < 2) return "";
+    let d = "";
+    gen.innerSamples.forEach((s, i) => {
+      const [x, y] = screenPt(cam, s.z, s.r);
+      d += `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)} `;
+    });
+    for (let i = gen.innerSamples.length - 1; i >= 0; i--) {
+      const [x, y] = screenPt(cam, gen.innerSamples[i].z, -gen.innerSamples[i].r);
+      d += `L ${x.toFixed(1)} ${y.toFixed(1)} `;
+    }
+    return d + "Z";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gen.innerSamples, cam]);
 
   /* ---------- مسیر SVG المان‌های اسکچ ---------- */
   const segPath = (s: SketchSeg, c: Cam, mirror = false): string => {
@@ -1394,6 +1568,11 @@ export default function ProfileEditor({
             <path d={ghostPath} fill="rgba(227,169,78,0.12)" stroke="rgba(227,169,78,0.4)" strokeWidth={1} />
           </g>
         )}
+        {settings.showGhost && innerGhost && (
+          <g style={{ opacity: iso ? 0.15 : 1, ...fadeStyle }}>
+            <path d={innerGhost} fill="rgba(76,201,240,0.10)" stroke="rgba(76,201,240,0.55)" strokeWidth={1} strokeDasharray="5 4" />
+          </g>
+        )}
 
         {/* مسیر ابزار */}
         <g>
@@ -1409,6 +1588,14 @@ export default function ProfileEditor({
               <g key={i} style={{ opacity: dim ? 0.06 : 1, ...fadeStyle }}>
                 <path d={run.d} fill="none" stroke={color} strokeOpacity={matchIso ? 1 : baseOpacity} strokeWidth={(isRapid ? 1 : run.kind === "finish" ? 1.8 : 1.4) + (matchIso ? 0.7 : 0)} strokeDasharray={isRapid ? "4 4" : run.kind === "offset" ? "7 4" : undefined} strokeLinejoin="round" strokeLinecap="round" filter={matchIso ? "url(#curveGlow)" : undefined} />
                 {run.arrows && !dim && <path d={run.arrows} fill={color} fillOpacity={0.95} />}
+                {run.holder === 2 && !dim && !isRapid && (
+                  <g>
+                    <rect x={run.sx - 12} y={run.sy - 21} width={24} height={13} rx={3} fill="#120e09" stroke="#4cc9f0" strokeWidth={1} />
+                    <text x={run.sx} y={run.sy - 11} textAnchor="middle" fontSize={8.5} fontWeight={800} fontFamily="JetBrains Mono, monospace" fill="#4cc9f0">
+                      H2
+                    </text>
+                  </g>
+                )}
               </g>
             );
           })}
@@ -1418,18 +1605,19 @@ export default function ProfileEditor({
         <g style={{ opacity: iso ? 0.3 : 1, ...fadeStyle }}>
           {/* آینهٔ پایین محور */}
           {segs.map((s) => (
-            <path key={`m${s.id}`} d={segPath(s, cam, true)} fill="none" stroke="#e3a94e" strokeOpacity={0.28} strokeWidth={1.6} strokeLinecap="round" />
+            <path key={`m${s.id}`} d={segPath(s, cam, true)} fill="none" stroke={segSide.get(s.id) === "inner" ? "#4cc9f0" : "#e3a94e"} strokeOpacity={0.28} strokeWidth={1.6} strokeLinecap="round" />
           ))}
           {segs.map((s) => {
             const sel = selected.includes(s.id);
             const hov = hoverId === s.id;
             const hasSelPt = selPointSegIds.includes(s.id);
+            const base = segSide.get(s.id) === "inner" ? "#4cc9f0" : "#f3c26b";
             return (
               <path
                 key={s.id}
                 d={segPath(s, cam)}
                 fill="none"
-                stroke={sel ? "#45b394" : hasSelPt ? "#ffd27a" : hov ? "#fff3dc" : "#f3c26b"}
+                stroke={sel ? "#45b394" : hasSelPt ? "#ffd27a" : hov ? "#fff3dc" : base}
                 strokeWidth={sel ? 3.2 : hasSelPt ? 3.4 : hov ? 3 : 2.4}
                 strokeLinecap="round"
                 filter={sel || hasSelPt ? "url(#curveGlow)" : undefined}
@@ -1586,6 +1774,29 @@ export default function ProfileEditor({
           })}
         </g>
 
+        {/* نقطه Split */}
+        {split.enabled && (
+          <g>
+            {(() => {
+              const [x, y] = P(split.z, split.r);
+              const ym = P(split.z, -split.r)[1];
+              return (
+                <g>
+                  {[y, ym].map((yy, k) => (
+                    <g key={k} filter="url(#curveGlow)">
+                      <rect x={x - 7} y={yy - 7} width={14} height={14} transform={`rotate(45 ${x} ${yy})`} fill="#f72585" stroke="#120e09" strokeWidth={1.8} />
+                      <circle cx={x} cy={yy} r={2.2} fill="#ffffff" />
+                    </g>
+                  ))}
+                  <text x={x + 13} y={y - 9} fontSize={10} fontFamily="Vazirmatn, sans-serif" fontWeight={800} fill="#f72585" stroke="#120e09" strokeWidth={3} paintOrder="stroke">
+                    Split
+                  </text>
+                </g>
+              );
+            })()}
+          </g>
+        )}
+
         {/* پیش‌نمایش نامزدهای باکس انتخاب */}
         {marquee &&
           marqueeHits.map((id) => {
@@ -1683,9 +1894,9 @@ export default function ProfileEditor({
         </div>
       )}
 
-      {/* ---------- نوار ابزار ترسیم ---------- */}
-      <div className="absolute top-2.5 left-2.5 flex flex-col gap-1.5">
-        <div className="flex overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
+      {/* ---------- نوار ابزار ترسیم: ستون عمودی چپ ---------- */}
+      <div className="absolute top-2.5 bottom-2.5 left-2.5 flex w-[30px] flex-col gap-1.5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex shrink-0 flex-col overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
           {TOOLS.map((t, i) => (
             <button
               key={t.id}
@@ -1695,8 +1906,8 @@ export default function ProfileEditor({
               }}
               title={`${t.name} (${t.key}) — ${t.hint}`}
               className={cn(
-                "grid h-9 w-9 place-items-center transition-colors",
-                i > 0 && "border-r border-edge",
+                "grid h-[27px] w-full shrink-0 place-items-center transition-colors",
+                i > 0 && "border-t border-edge",
                 tool === t.id ? "bg-teal text-[#0d201a]" : "text-mute hover:bg-panel3 hover:text-ink"
               )}
             >
@@ -1705,33 +1916,36 @@ export default function ProfileEditor({
           ))}
         </div>
 
-        <div className="flex overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
-          <button onClick={onUndo} disabled={!canUndo} title="واگرد (Ctrl+Z)" className={cn("grid h-8 w-8 place-items-center transition-colors", canUndo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
+        <div className="flex shrink-0 flex-col overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
+          <button onClick={onUndo} disabled={!canUndo} title="واگرد (Ctrl+Z)" className={cn("grid h-[27px] w-full place-items-center transition-colors", canUndo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
             <IconUndo className="h-3.5 w-3.5" />
           </button>
-          <button onClick={onRedo} disabled={!canRedo} title="بازانجام (Ctrl+Y)" className={cn("grid h-8 w-8 place-items-center border-r border-edge transition-colors", canRedo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
+          <button onClick={onRedo} disabled={!canRedo} title="بازانجام (Ctrl+Y)" className={cn("grid h-[27px] w-full border-t border-edge place-items-center transition-colors", canRedo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
             <IconRedo className="h-3.5 w-3.5" />
           </button>
-          <button onClick={duplicateSelected} disabled={!selected.length} title="کپی المان‌های انتخابی (Ctrl+D)" className={cn("grid h-8 w-8 place-items-center border-r border-edge transition-colors", selected.length ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
+          <button onClick={duplicateSelected} disabled={!selected.length} title="کپی المان‌های انتخابی (Ctrl+D)" className={cn("grid h-[27px] w-full border-t border-edge place-items-center transition-colors", selected.length ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
             <IconCopy className="h-3.5 w-3.5" />
           </button>
-          <button onClick={deleteSelected} disabled={!selected.length} title="حذف انتخابی (Delete)" className={cn("grid h-8 w-8 place-items-center border-r border-edge transition-colors", selected.length ? "text-danger/80 hover:bg-danger/15 hover:text-danger" : "text-dim/40")}>
+          <button onClick={deleteSelected} disabled={!selected.length} title="حذف انتخابی (Delete)" className={cn("grid h-[27px] w-full border-t border-edge place-items-center transition-colors", selected.length ? "text-danger/80 hover:bg-danger/15 hover:text-danger" : "text-dim/40")}>
             <IconTrash className="h-3.5 w-3.5" />
           </button>
         </div>
 
-        <div className="flex gap-1">
-          <button className="btn !px-2 !py-1.5" title="بزرگ‌نمایی" onClick={() => zoomBy(1.3)}>
+        <div className="flex shrink-0 flex-col gap-1">
+          <button className="grid h-[27px] w-full place-items-center rounded-lg border border-edge bg-panel/92 text-mute shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:border-edge2 hover:text-ink" title="بزرگ‌نمایی" onClick={() => zoomBy(1.3)}>
             <IconPlus className="h-3.5 w-3.5" />
           </button>
-          <button className="btn !px-2 !py-1.5" title="کوچک‌نمایی" onClick={() => zoomBy(1 / 1.3)}>
+          <button className="grid h-[27px] w-full place-items-center rounded-lg border border-edge bg-panel/92 text-mute shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:border-edge2 hover:text-ink" title="کوچک‌نمایی" onClick={() => zoomBy(1 / 1.3)}>
             <IconMinus className="h-3.5 w-3.5" />
           </button>
-          <button className="btn !px-2 !py-1.5" title="جاگذاری نما" onClick={() => setCam(fit(size.w, size.h))}>
+          <button className="grid h-[27px] w-full place-items-center rounded-lg border border-edge bg-panel/92 text-mute shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:border-edge2 hover:text-ink" title="جاگذاری نما" onClick={() => setCam(fit(size.w, size.h))}>
             <IconFit className="h-3.5 w-3.5" />
           </button>
           <button
-            className={cn("btn !px-2 !py-1.5", panMode && "!border-teal/60 !text-teal")}
+            className={cn(
+              "grid h-[27px] w-full place-items-center rounded-lg border bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm transition-colors",
+              panMode ? "border-teal/60 text-teal" : "border-edge text-mute hover:border-edge2 hover:text-ink"
+            )}
             title="پن (جابه‌جایی نما) — یا Space را نگه دارید، یا با دکمهٔ وسط/راست بکشید"
             onClick={() => setPanMode((v) => !v)}
           >
@@ -1742,7 +1956,7 @@ export default function ProfileEditor({
 
       {/* ---------- نوار انتخاب ---------- */}
       {tool === "select" && (
-        <div className="anim-in absolute bottom-2.5 left-1/2 z-10 flex max-w-[92%] -translate-x-1/2 flex-col gap-1 rounded-lg border border-edge bg-panel/92 px-2.5 py-1.5 shadow-lg shadow-black/40 backdrop-blur-sm">
+        <div className="anim-in absolute bottom-[44px] left-[46px] z-10 flex max-w-[calc(100%-60px)] flex-col gap-1 rounded-lg border border-edge bg-panel/92 px-2.5 py-1.5 shadow-lg shadow-black/40 backdrop-blur-sm">
           <div className="flex items-center justify-center gap-1.5">
             <span
               className={cn(
@@ -1812,19 +2026,7 @@ export default function ProfileEditor({
         </div>
       )}
 
-      {/* لایه‌های نمایش */}
-      <div className="absolute top-2.5 right-2.5 flex max-w-[52%] flex-wrap justify-end gap-1.5">
-        {CHIPS.map((c) => (
-          <button
-            key={c.key}
-            onClick={() => onSettings({ [c.key]: !settings[c.key] } as Partial<EdSettings>)}
-            className={cn("chip-toggle backdrop-blur-sm transition-all", settings[c.key] ? "border-edge2 bg-panel/85 text-ink" : "border-edge bg-panel/60 text-dim")}
-          >
-            <span className="h-2 w-2 rounded-full" style={{ background: c.color, opacity: settings[c.key] ? 1 : 0.25 }} />
-            {c.label}
-          </button>
-        ))}
-      </div>
+      <LayerMenu settings={settings} onSettings={onSettings} />
 
       {/* ---------- بازرس هندسی ---------- */}
       {one && tool === "select" && (
