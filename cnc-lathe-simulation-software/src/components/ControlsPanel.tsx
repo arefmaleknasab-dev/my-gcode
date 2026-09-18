@@ -738,7 +738,9 @@ const COLLAPSED_SECTIONS_KEY = "xarat-code.sections-collapsed";
 function loadCollapsedSections(): Record<string, boolean> {
   try {
     const raw = localStorage.getItem(COLLAPSED_SECTIONS_KEY);
-    return raw && typeof raw === "object" ? (JSON.parse(raw) as Record<string, boolean>) : {};
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, boolean>) : {};
   } catch {
     return {};
   }
