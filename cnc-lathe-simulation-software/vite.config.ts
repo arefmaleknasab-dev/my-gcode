@@ -16,4 +16,20 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    strictPort: true,
+    cors: true,
+    headers: {
+      "X-Frame-Options": "ALLOWALL",
+    },
+    // @ts-ignore - allow all preview hosts for Arena sandbox
+    allowedHosts: true as any,
+  },
+  preview: {
+    host: "0.0.0.0",
+    port: 5173,
+    cors: true,
+  },
 });
