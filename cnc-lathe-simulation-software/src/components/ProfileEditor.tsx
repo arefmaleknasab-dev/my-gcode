@@ -35,6 +35,7 @@ import {
   IconCursor,
   IconFit,
   IconHand,
+  IconLayers,
   IconLine,
   IconMagnet,
   IconMagnetSm,
@@ -137,6 +138,74 @@ const CHIPS: { key: LayerKey; label: string; color: string }[] = [
   { key: "showRapids", label: "حرکت سریع", color: "#93a1ad" },
   { key: "showGhost", label: "سایه طرح", color: "#c9955a" },
 ];
+
+/* منوی کرکره‌ای لایه‌های نمایش — جایگزین نوار چیپ‌های افقی */
+function LayerMenu({ settings, onSettings }: { settings: EdSettings; onSettings: (p: Partial<EdSettings>) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const activeN = CHIPS.filter((c) => settings[c.key]).length;
+  return (
+    <div ref={ref} className="anim-in absolute top-2.5 right-2.5 z-20">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="لایه‌های نمایش مسیرها روی بوم"
+        className="chip-toggle border-edge bg-panel/85 text-ink backdrop-blur-sm transition-all hover:border-edge2"
+      >
+        <IconLayers className="h-3.5 w-3.5 text-brass" />
+        لایه‌ها
+        <span className={cn("rounded-full border px-1 font-mono text-[9px] font-bold", activeN === CHIPS.length ? "border-teal/50 text-teal" : "border-edge2 text-mute")}>
+          {activeN}/{CHIPS.length}
+        </span>
+        <svg
+          viewBox="0 0 12 12"
+          className={cn("h-2 w-2 text-dim transition-transform", open && "-rotate-180")}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.8}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M2 4l4 4 4-4" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute top-[calc(100%+6px)] right-0 w-52 rounded-lg border border-edge bg-panel/95 p-1.5 shadow-xl shadow-black/50 backdrop-blur">
+          <div className="px-2 pt-0.5 pb-1 text-[10px] font-bold text-dim">نمایش مسیرهای عملیات روی بوم</div>
+          {CHIPS.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => onSettings({ [c.key]: !settings[c.key] } as Partial<EdSettings>)}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-right text-[11.5px] transition-colors hover:bg-panel3"
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: c.color, opacity: settings[c.key] ? 1 : 0.25 }} />
+              <span className={cn("flex-1 truncate", settings[c.key] ? "text-ink/85" : "text-dim")}>{c.label}</span>
+              {settings[c.key] ? (
+                <IconCheck className="h-3.5 w-3.5 shrink-0 text-teal" />
+              ) : (
+                <span className="h-3 w-3 shrink-0 rounded-[4px] border border-edge2" />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const KIND_VISIBLE: Record<SegKind, LayerKey> = {
   rapid: "showRapids",
@@ -1825,9 +1894,9 @@ export default function ProfileEditor({
         </div>
       )}
 
-      {/* ---------- نوار ابزار ترسیم ---------- */}
-      <div className="absolute top-2.5 left-2.5 flex flex-col gap-1.5">
-        <div className="flex overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
+      {/* ---------- نوار ابزار ترسیم: ستون عمودی چپ ---------- */}
+      <div className="absolute top-2.5 bottom-2.5 left-2.5 flex w-[30px] flex-col gap-1.5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex shrink-0 flex-col overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
           {TOOLS.map((t, i) => (
             <button
               key={t.id}
@@ -1837,8 +1906,8 @@ export default function ProfileEditor({
               }}
               title={`${t.name} (${t.key}) — ${t.hint}`}
               className={cn(
-                "grid h-9 w-9 place-items-center transition-colors",
-                i > 0 && "border-r border-edge",
+                "grid h-[27px] w-full shrink-0 place-items-center transition-colors",
+                i > 0 && "border-t border-edge",
                 tool === t.id ? "bg-teal text-[#0d201a]" : "text-mute hover:bg-panel3 hover:text-ink"
               )}
             >
@@ -1847,33 +1916,36 @@ export default function ProfileEditor({
           ))}
         </div>
 
-        <div className="flex overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
-          <button onClick={onUndo} disabled={!canUndo} title="واگرد (Ctrl+Z)" className={cn("grid h-8 w-8 place-items-center transition-colors", canUndo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
+        <div className="flex shrink-0 flex-col overflow-hidden rounded-lg border border-edge bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm">
+          <button onClick={onUndo} disabled={!canUndo} title="واگرد (Ctrl+Z)" className={cn("grid h-[27px] w-full place-items-center transition-colors", canUndo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
             <IconUndo className="h-3.5 w-3.5" />
           </button>
-          <button onClick={onRedo} disabled={!canRedo} title="بازانجام (Ctrl+Y)" className={cn("grid h-8 w-8 place-items-center border-r border-edge transition-colors", canRedo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
+          <button onClick={onRedo} disabled={!canRedo} title="بازانجام (Ctrl+Y)" className={cn("grid h-[27px] w-full border-t border-edge place-items-center transition-colors", canRedo ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
             <IconRedo className="h-3.5 w-3.5" />
           </button>
-          <button onClick={duplicateSelected} disabled={!selected.length} title="کپی المان‌های انتخابی (Ctrl+D)" className={cn("grid h-8 w-8 place-items-center border-r border-edge transition-colors", selected.length ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
+          <button onClick={duplicateSelected} disabled={!selected.length} title="کپی المان‌های انتخابی (Ctrl+D)" className={cn("grid h-[27px] w-full border-t border-edge place-items-center transition-colors", selected.length ? "text-mute hover:bg-panel3 hover:text-ink" : "text-dim/40")}>
             <IconCopy className="h-3.5 w-3.5" />
           </button>
-          <button onClick={deleteSelected} disabled={!selected.length} title="حذف انتخابی (Delete)" className={cn("grid h-8 w-8 place-items-center border-r border-edge transition-colors", selected.length ? "text-danger/80 hover:bg-danger/15 hover:text-danger" : "text-dim/40")}>
+          <button onClick={deleteSelected} disabled={!selected.length} title="حذف انتخابی (Delete)" className={cn("grid h-[27px] w-full border-t border-edge place-items-center transition-colors", selected.length ? "text-danger/80 hover:bg-danger/15 hover:text-danger" : "text-dim/40")}>
             <IconTrash className="h-3.5 w-3.5" />
           </button>
         </div>
 
-        <div className="flex gap-1">
-          <button className="btn !px-2 !py-1.5" title="بزرگ‌نمایی" onClick={() => zoomBy(1.3)}>
+        <div className="flex shrink-0 flex-col gap-1">
+          <button className="grid h-[27px] w-full place-items-center rounded-lg border border-edge bg-panel/92 text-mute shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:border-edge2 hover:text-ink" title="بزرگ‌نمایی" onClick={() => zoomBy(1.3)}>
             <IconPlus className="h-3.5 w-3.5" />
           </button>
-          <button className="btn !px-2 !py-1.5" title="کوچک‌نمایی" onClick={() => zoomBy(1 / 1.3)}>
+          <button className="grid h-[27px] w-full place-items-center rounded-lg border border-edge bg-panel/92 text-mute shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:border-edge2 hover:text-ink" title="کوچک‌نمایی" onClick={() => zoomBy(1 / 1.3)}>
             <IconMinus className="h-3.5 w-3.5" />
           </button>
-          <button className="btn !px-2 !py-1.5" title="جاگذاری نما" onClick={() => setCam(fit(size.w, size.h))}>
+          <button className="grid h-[27px] w-full place-items-center rounded-lg border border-edge bg-panel/92 text-mute shadow-lg shadow-black/30 backdrop-blur-sm transition-colors hover:border-edge2 hover:text-ink" title="جاگذاری نما" onClick={() => setCam(fit(size.w, size.h))}>
             <IconFit className="h-3.5 w-3.5" />
           </button>
           <button
-            className={cn("btn !px-2 !py-1.5", panMode && "!border-teal/60 !text-teal")}
+            className={cn(
+              "grid h-[27px] w-full place-items-center rounded-lg border bg-panel/92 shadow-lg shadow-black/30 backdrop-blur-sm transition-colors",
+              panMode ? "border-teal/60 text-teal" : "border-edge text-mute hover:border-edge2 hover:text-ink"
+            )}
             title="پن (جابه‌جایی نما) — یا Space را نگه دارید، یا با دکمهٔ وسط/راست بکشید"
             onClick={() => setPanMode((v) => !v)}
           >
@@ -1954,19 +2026,7 @@ export default function ProfileEditor({
         </div>
       )}
 
-      {/* لایه‌های نمایش */}
-      <div className="absolute top-2.5 right-2.5 flex max-w-[52%] flex-wrap justify-end gap-1.5">
-        {CHIPS.map((c) => (
-          <button
-            key={c.key}
-            onClick={() => onSettings({ [c.key]: !settings[c.key] } as Partial<EdSettings>)}
-            className={cn("chip-toggle backdrop-blur-sm transition-all", settings[c.key] ? "border-edge2 bg-panel/85 text-ink" : "border-edge bg-panel/60 text-dim")}
-          >
-            <span className="h-2 w-2 rounded-full" style={{ background: c.color, opacity: settings[c.key] ? 1 : 0.25 }} />
-            {c.label}
-          </button>
-        ))}
-      </div>
+      <LayerMenu settings={settings} onSettings={onSettings} />
 
       {/* ---------- بازرس هندسی ---------- */}
       {one && tool === "select" && (
