@@ -1954,55 +1954,6 @@ export default function ProfileEditor({
         </div>
       </div>
 
-      {/* ---------- نوار انتخاب ---------- */}
-      {tool === "select" && (
-        <div className="anim-in absolute bottom-2.5 left-1/2 z-10 flex max-w-[92%] -translate-x-1/2 flex-col gap-1 rounded-lg border border-edge bg-panel/92 px-2.5 py-1.5 shadow-lg shadow-black/40 backdrop-blur-sm">
-          <div className="flex items-center justify-center gap-1.5">
-            <span
-              className={cn(
-                "rounded-full border px-2 py-0.5 text-[10px] font-bold",
-                selected.length ? "border-teal/50 text-teal" : "border-edge text-dim"
-              )}
-            >
-              {selected.length ? `${selected.length} انتخاب شده` : "بدون انتخاب"}
-            </span>
-            {selLocked && (
-              <span
-                className="rounded-full border border-danger/50 px-2 py-0.5 text-[10px] font-bold text-danger"
-                title="این المان(ها) به المان دیگری متصل‌اند و با درگ جابه‌جا نمی‌شوند تا اتصال پاره نشود؛ برای جابه‌جایی، کل زنجیرهٔ متصل را با هم انتخاب کنید یا نقطه را راست‌کلیک و جدا کنید"
-              >
-                قفل — متصل
-              </span>
-            )}
-            <span className="h-4 w-px bg-edge" />
-            <button onClick={selectAllEligible} title="انتخاب همه (Ctrl+A)" className="rounded px-1.5 py-0.5 text-[10.5px] font-bold text-mute transition-colors hover:bg-panel3 hover:text-ink">
-              همه
-            </button>
-            <button onClick={invertSelection} title="معکوس‌کردن انتخاب (Ctrl+I)" className="rounded px-1.5 py-0.5 text-[10.5px] font-bold text-mute transition-colors hover:bg-panel3 hover:text-ink">
-              معکوس
-            </button>
-            <button onClick={() => onSelected([])} disabled={!selected.length} title="لغو انتخاب (Esc)" className="rounded px-1.5 py-0.5 text-[10.5px] font-bold text-mute transition-colors hover:bg-panel3 hover:text-ink disabled:opacity-35">
-              پاک
-            </button>
-          </div>
-          <div className="flex items-center justify-center gap-1 border-t border-edge/60 pt-1" dir="ltr">
-            {(["line", "quad", "cubic", "arc"] as SketchKind[]).map((k) => (
-              <button
-                key={k}
-                onClick={() => setSelFilter((f) => ({ ...f, [k]: !f[k] }))}
-                title={selFilter[k] ? `عدم انتخاب ${KIND_FA[k]}‌ها در باکس/کلیک` : `انتخاب ${KIND_FA[k]}‌ها`}
-                className={cn(
-                  "rounded-full border px-2 py-px text-[9px] font-bold transition-all",
-                  selFilter[k] ? "border-teal/50 text-teal" : "border-edge text-dim/50 line-through"
-                )}
-              >
-                {KIND_FA[k]}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* راهنمای مرحلهٔ ترسیم */}
       {tool !== "select" && (
         <div className="anim-in absolute top-2.5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-teal/50 bg-panel/95 py-1.5 pr-3 pl-1.5 text-[11.5px] font-bold text-teal shadow-lg shadow-black/40 backdrop-blur-sm">
@@ -2039,7 +1990,7 @@ export default function ProfileEditor({
         />
       )}
       {selSegs.length > 1 && tool === "select" && (
-        <div className="anim-in absolute right-2.5 bottom-11 rounded-lg border border-teal/40 bg-panel/95 px-3 py-2 text-[11px] font-bold text-teal backdrop-blur-sm">
+        <div className="anim-in absolute right-2.5 bottom-[78px] rounded-lg border border-teal/40 bg-panel/95 px-3 py-2 text-[11px] font-bold text-teal backdrop-blur-sm">
           {selSegs.length} المان انتخاب شده — برای جابه‌جایی بکشید یا Delete بزنید
         </div>
       )}
@@ -2056,7 +2007,7 @@ export default function ProfileEditor({
           ps.part === "c1" ? "دستهٔ کنترل ۱" :
           ps.part === "c2" ? "دستهٔ کنترل ۲" : "نقطهٔ روی کمان";
         return (
-          <div className="anim-in absolute left-2.5 bottom-11 w-[196px] rounded-lg border border-brass/40 bg-panel/95 p-2.5 shadow-xl shadow-black/40 backdrop-blur-sm">
+          <div className="anim-in absolute left-[46px] bottom-[78px] w-[196px] rounded-lg border border-brass/40 bg-panel/95 p-2.5 shadow-xl shadow-black/40 backdrop-blur-sm">
             <div className="mb-2 flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-[11.5px] font-bold text-brass2">
                 <span className="h-2 w-2 rounded-full bg-brass2" />
@@ -2075,49 +2026,100 @@ export default function ProfileEditor({
         );
       })()}
       {selPoints.length > 1 && tool === "select" && (
-        <div className="anim-in absolute left-2.5 bottom-11 rounded-lg border border-brass/40 bg-panel/95 px-3 py-2 text-[11px] font-bold text-brass2 backdrop-blur-sm">
+        <div className="anim-in absolute left-[46px] bottom-[78px] rounded-lg border border-brass/40 bg-panel/95 px-3 py-2 text-[11px] font-bold text-brass2 backdrop-blur-sm">
           {selPoints.length} نقطه انتخاب شده — بکشید تا با هم جابه‌جا شوند
         </div>
       )}
 
-      {/* گیر و راهنما */}
-      <div className="absolute right-2.5 bottom-2.5 flex items-center gap-2">
-        <button
-          className={cn("chip-toggle backdrop-blur-sm transition-all", settings.smartSnap ? "border-teal/50 bg-panel/85 text-teal" : "border-edge bg-panel/60 text-dim")}
-          title="چسبندگی هوشمند به نقاط انتها، وسط، مرکز و تقاطع"
-          onClick={() => onSettings({ smartSnap: !settings.smartSnap })}
-        >
-          <IconCheck className="h-3.5 w-3.5" />
-          اسنپ هوشمند
-        </button>
-        <button
-          className="chip-toggle border-edge bg-panel/85 text-mute backdrop-blur-sm hover:text-ink"
-          title="گیر شبکه"
-          onClick={() => {
-            const i = SNAP_STEPS.indexOf(settings.snap);
-            onSettings({ snap: SNAP_STEPS[(i + 1) % SNAP_STEPS.length] });
-          }}
-        >
-          <IconMagnet className="h-3.5 w-3.5 text-brass" />
-          شبکه: {snapLabel}
-        </button>
-        <span className="hidden items-center gap-1.5 rounded-full border border-edge bg-panel/85 px-2.5 py-1 text-[10.5px] text-mute backdrop-blur-sm lg:inline-flex">
-          <IconCorner className="h-3.5 w-3.5" />
-          {segs.length} المان
-        </span>
-        <span
-          className="hidden items-center gap-1.5 rounded-full border border-edge bg-panel/85 px-2.5 py-1 text-[10.5px] text-mute backdrop-blur-sm xl:inline-flex"
-          title="درگ چپ‌به‌راست: فقط المان‌های کاملاً داخل باکس (آبی) • راست‌به‌چپ: المان‌های متقاطع (سبز) • Shift: افزودن • Ctrl: حذف • دابل‌کلیک: انتخاب زنجیره • پن: Space یا دکمهٔ وسط/راست"
-        >
-          <span className="inline-block h-2.5 w-4 rounded-[2px] border border-[#4aa3ff] bg-[#4aa3ff]/25" />
-          <span className="inline-block h-2.5 w-4 rounded-[2px] border border-dashed border-[#3faf5d] bg-[#3faf5d]/20" />
-          باکس انتخابگر
-        </span>
+      {/* ---------- نوار پایین بوم: قرائت مختصات + نوار انتخاب + گیر و راهنما — بدون همپوشانی ---------- */}
+      <div className="absolute right-2.5 bottom-2.5 left-[46px] z-10 flex items-end gap-2">
+        <div className="shrink-0 rounded-md border border-edge bg-panel/90 px-2.5 py-1 font-mono text-[11px] tracking-wide text-brass2/90 backdrop-blur-sm" dir="ltr">
+          <span ref={readoutRef}>X 0.0&nbsp;&nbsp;Y⌀ 0.0</span>
+        </div>
+          {/* نوار انتخاب */}
+        {tool === "select" && (
+          <div className="anim-in mx-auto flex min-w-0 max-w-[88%] flex-col gap-1 rounded-lg border border-edge bg-panel/92 px-2.5 py-1.5 shadow-lg shadow-black/40 backdrop-blur-sm">
+            <div className="flex items-center justify-center gap-1.5">
+              <span
+                className={cn(
+                  "rounded-full border px-2 py-0.5 text-[10px] font-bold",
+                  selected.length ? "border-teal/50 text-teal" : "border-edge text-dim"
+                )}
+              >
+                {selected.length ? `${selected.length} انتخاب شده` : "بدون انتخاب"}
+              </span>
+              {selLocked && (
+                <span
+                  className="rounded-full border border-danger/50 px-2 py-0.5 text-[10px] font-bold text-danger"
+                  title="این المان(ها) به المان دیگری متصل‌اند و با درگ جابه‌جا نمی‌شوند تا اتصال پاره نشود؛ برای جابه‌جایی، کل زنجیرهٔ متصل را با هم انتخاب کنید یا نقطه را راست‌کلیک و جدا کنید"
+                >
+                  قفل — متصل
+                </span>
+              )}
+              <span className="h-4 w-px bg-edge" />
+              <button onClick={selectAllEligible} title="انتخاب همه (Ctrl+A)" className="rounded px-1.5 py-0.5 text-[10.5px] font-bold text-mute transition-colors hover:bg-panel3 hover:text-ink">
+                همه
+              </button>
+              <button onClick={invertSelection} title="معکوس‌کردن انتخاب (Ctrl+I)" className="rounded px-1.5 py-0.5 text-[10.5px] font-bold text-mute transition-colors hover:bg-panel3 hover:text-ink">
+                معکوس
+              </button>
+              <button onClick={() => onSelected([])} disabled={!selected.length} title="لغو انتخاب (Esc)" className="rounded px-1.5 py-0.5 text-[10.5px] font-bold text-mute transition-colors hover:bg-panel3 hover:text-ink disabled:opacity-35">
+                پاک
+              </button>
+            </div>
+            <div className="flex items-center justify-center gap-1 border-t border-edge/60 pt-1" dir="ltr">
+              {(["line", "quad", "cubic", "arc"] as SketchKind[]).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setSelFilter((f) => ({ ...f, [k]: !f[k] }))}
+                  title={selFilter[k] ? `عدم انتخاب ${KIND_FA[k]}‌ها در باکس/کلیک` : `انتخاب ${KIND_FA[k]}‌ها`}
+                  className={cn(
+                    "rounded-full border px-2 py-px text-[9px] font-bold transition-all",
+                    selFilter[k] ? "border-teal/50 text-teal" : "border-edge text-dim/50 line-through"
+                  )}
+                >
+                  {KIND_FA[k]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* گیر و راهنما */}
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            className={cn("chip-toggle backdrop-blur-sm transition-all", settings.smartSnap ? "border-teal/50 bg-panel/85 text-teal" : "border-edge bg-panel/60 text-dim")}
+            title="چسبندگی هوشمند به نقاط انتها، وسط، مرکز و تقاطع"
+            onClick={() => onSettings({ smartSnap: !settings.smartSnap })}
+          >
+            <IconCheck className="h-3.5 w-3.5" />
+            اسنپ هوشمند
+          </button>
+          <button
+            className="chip-toggle border-edge bg-panel/85 text-mute backdrop-blur-sm hover:text-ink"
+            title="گیر شبکه"
+            onClick={() => {
+              const i = SNAP_STEPS.indexOf(settings.snap);
+              onSettings({ snap: SNAP_STEPS[(i + 1) % SNAP_STEPS.length] });
+            }}
+          >
+            <IconMagnet className="h-3.5 w-3.5 text-brass" />
+            شبکه: {snapLabel}
+          </button>
+          <span className="hidden items-center gap-1.5 rounded-full border border-edge bg-panel/85 px-2.5 py-1 text-[10.5px] text-mute backdrop-blur-sm lg:inline-flex">
+            <IconCorner className="h-3.5 w-3.5" />
+            {segs.length} المان
+          </span>
+          <span
+            className="hidden items-center gap-1.5 rounded-full border border-edge bg-panel/85 px-2.5 py-1 text-[10.5px] text-mute backdrop-blur-sm xl:inline-flex"
+            title="درگ چپ‌به‌راست: فقط المان‌های کاملاً داخل باکس (آبی) • راست‌به‌چپ: المان‌های متقاطع (سبز) • Shift: افزودن • Ctrl: حذف • دابل‌کلیک: انتخاب زنجیره • پن: Space یا دکمهٔ وسط/راست"
+          >
+            <span className="inline-block h-2.5 w-4 rounded-[2px] border border-[#4aa3ff] bg-[#4aa3ff]/25" />
+            <span className="inline-block h-2.5 w-4 rounded-[2px] border border-dashed border-[#3faf5d] bg-[#3faf5d]/20" />
+            باکس انتخابگر
+          </span>
+        </div>
       </div>
 
-      <div className="absolute bottom-2.5 left-2.5 rounded-md border border-edge bg-panel/90 px-2.5 py-1 font-mono text-[11px] tracking-wide text-brass2/90 backdrop-blur-sm" dir="ltr">
-        <span ref={readoutRef}>X 0.0&nbsp;&nbsp;Y⌀ 0.0</span>
-      </div>
     </div>
   );
 }
