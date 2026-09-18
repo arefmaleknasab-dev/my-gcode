@@ -293,7 +293,7 @@ export default function App() {
   ];
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col @container">
       {/* ---------- سربرگ ---------- */}
       <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge bg-panel/85 px-3.5 py-2 backdrop-blur">
         <div className="flex items-center gap-2.5">
@@ -341,7 +341,7 @@ export default function App() {
       </header>
 
       {/* ---------- بدنه ---------- */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:gap-2 lg:overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 @4xl:flex-row @4xl:gap-2 @4xl:overflow-hidden">
         <DockPanel
           title="تنظیمات"
           icon={<IconLayers className="h-3.5 w-3.5" />}
@@ -349,7 +349,7 @@ export default function App() {
           onCollapse={() => toggleCollapse("controls")}
           onClose={() => setPanel("controls", { open: false })}
           widthPx={layout.controls.size}
-          className="order-2 w-full shrink-0 lg:order-1"
+          className="order-2 w-full shrink-0 @4xl:order-1"
         >
           <ControlsPanel
             params={params}
@@ -369,7 +369,7 @@ export default function App() {
 
         {panelVis("controls") === "open" && panelVis("editor") === "open" && (
           <DockSplitter
-            className="lg:order-2"
+            className="@4xl:order-2"
             onResize={(dx) => resizePanel("controls", -dx)}
             onResetSize={() => resetPanelSize("controls")}
             title="تغییر عرض پنل تنظیمات (دابل‌کلیک: اندازه پیش‌فرض)"
@@ -382,8 +382,8 @@ export default function App() {
             state={layout.editor}
             onCollapse={() => toggleCollapse("editor")}
             onClose={() => setPanel("editor", { open: false })}
-            className="order-1 min-w-0 lg:order-3"
-            expandedClassName="h-[54vh] flex-1 lg:h-auto"
+            className="order-1 min-w-0 @4xl:order-3"
+            expandedClassName="h-[54vh] flex-1 @4xl:h-auto"
           >
             {mode === "design" ? (
             <ProfileEditor
@@ -410,7 +410,7 @@ export default function App() {
             )}
           </DockPanel>
         ) : (
-          <div className="order-1 grid min-h-[220px] flex-1 place-items-center rounded-lg border border-dashed border-edge2 bg-panel/40 p-6 text-center lg:order-3 lg:h-auto">
+          <div className="order-1 grid min-h-[220px] flex-1 place-items-center rounded-lg border border-dashed border-edge2 bg-panel/40 p-6 text-center @4xl:order-3 @4xl:h-auto">
             <div>
               <p className="text-[13px] font-bold text-mute">پنجره ویرایشگر بسته است</p>
               <p className="mt-1 text-[11.5px] text-dim">از منوی «پنجره» بالای صفحه دوباره بازش کنید</p>
@@ -423,7 +423,7 @@ export default function App() {
 
         {panelVis("editor") === "open" && panelVis("gcode") === "open" && (
           <DockSplitter
-            className="lg:order-4"
+            className="@4xl:order-4"
             onResize={(dx) => resizePanel("gcode", dx)}
             onResetSize={() => resetPanelSize("gcode")}
             title="تغییر عرض پنل جی‌کد (دابل‌کلیک: اندازه پیش‌فرض)"
@@ -436,8 +436,8 @@ export default function App() {
           onCollapse={() => toggleCollapse("gcode")}
           onClose={() => setPanel("gcode", { open: false })}
           widthPx={layout.gcode.size}
-          className="order-3 w-full shrink-0 lg:order-5"
-          expandedClassName="h-[420px] lg:h-auto"
+          className="order-3 w-full shrink-0 @4xl:order-5"
+          expandedClassName="h-[420px] @4xl:h-auto"
         >
           <GCodePanel
             gen={gen}

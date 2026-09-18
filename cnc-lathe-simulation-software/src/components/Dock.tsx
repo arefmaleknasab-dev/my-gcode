@@ -83,14 +83,14 @@ export function DockPanel({
         title={`${title} — باز کردن`}
         className={cn(
           "group flex shrink-0 grow-0 cursor-pointer items-center gap-2 rounded-lg border border-edge bg-panel px-3 py-2 transition-colors hover:border-brass/50",
-          "lg:h-full lg:w-11 lg:flex-col lg:justify-start lg:px-0 lg:py-2",
+          "@4xl:h-full @4xl:w-11 @4xl:flex-col @4xl:justify-start @4xl:px-0 @4xl:py-2",
           className
         )}
       >
         <span className="grid h-6 w-6 shrink-0 place-items-center rounded text-dim transition-colors group-hover:text-brass2">
           <IconPlus className="h-4 w-4" />
         </span>
-        <span className="truncate text-[12px] font-bold text-mute transition-colors group-hover:text-ink lg:[writing-mode:vertical-rl]">
+        <span className="truncate text-[12px] font-bold text-mute transition-colors group-hover:text-ink @4xl:[writing-mode:vertical-rl]">
           {title}
         </span>
       </button>
@@ -102,7 +102,7 @@ export function DockPanel({
       style={widthPx != null ? ({ "--dock-w": `${Math.round(widthPx)}px` } as CSSProperties) : undefined}
       className={cn(
         "flex min-h-0 min-w-0 flex-col gap-1.5",
-        widthPx != null && "lg:w-[var(--dock-w)] lg:shrink-0",
+        widthPx != null && "@4xl:w-[var(--dock-w)] @4xl:shrink-0",
         className,
         expandedClassName
       )}
@@ -188,7 +188,7 @@ export function DockSplitter({ onResize, onResetSize, title, className }: DockSp
       }}
       onDoubleClick={onResetSize}
       className={cn(
-        "group hidden w-[9px] shrink-0 cursor-col-resize touch-none select-none items-stretch justify-center lg:flex",
+        "group hidden w-[9px] shrink-0 cursor-col-resize touch-none select-none items-stretch justify-center @4xl:flex",
         className
       )}
     >
