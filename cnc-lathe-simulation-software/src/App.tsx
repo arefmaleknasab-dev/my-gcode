@@ -295,7 +295,7 @@ export default function App() {
   return (
     <div className="flex h-full flex-col @container">
       {/* ---------- سربرگ ---------- */}
-      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge bg-panel/85 px-3.5 py-2 backdrop-blur">
+      <header className="relative z-40 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge bg-panel/85 px-3.5 py-2 backdrop-blur">
         <div className="flex items-center gap-2.5">
           <span className="grid h-9 w-9 place-items-center rounded-lg border border-brass/40 bg-gradient-to-b from-panel3 to-panel text-brass shadow-[0_0_18px_rgba(227,169,78,0.18)]">
             <IconSpindle className="h-5 w-5" />
