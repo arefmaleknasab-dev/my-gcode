@@ -493,7 +493,28 @@ export const STRATEGIES: Strategy[] = [
 ];
 
 export function makeOps(types: OpType[]): Op[] {
-  return types.map((t) => ({ id: opUid++, type: t, on: true, holder: DEFAULT_HOLDER[t] }));
+  const ops = types.map((t) => ({ id: opUid++, type: t, on: true, holder: DEFAULT_HOLDER[t] }));
+  /* پیش‌فرض: همیشه عملیات خارج‌تراشی اول و داخل‌تراشی بعد از آن (جابه‌جایی دستی با درگ/فلش آزاد است) */
+  return outerFirstOps(ops);
+}
+
+/** مرتب‌سازی پایدار: بیرونی‌ها به ترتیب فعلی، سپس داخل‌ها به ترتیب فعلی */
+export function outerFirstTypes(types: OpType[]): OpType[] {
+  return [...types.filter((t) => !INNER_OPS.includes(t)), ...types.filter((t) => INNER_OPS.includes(t))];
+}
+
+export function outerFirstOps<T extends { type: OpType }>(ops: T[]): T[] {
+  const outer: T[] = [];
+  const inner: T[] = [];
+  for (const o of ops) (INNER_OPS.includes(o.type) ? inner : outer).push(o);
+  return [...outer, ...inner];
+}
+
+/** محل درج پیش‌فرضِ عملیات تازه: بیرونی ← انتهای بلوک بیرونی، داخلی ← انتهای زنجیره */
+export function defaultOpInsertIndex(ops: { type: OpType }[], type: OpType): number {
+  if (INNER_OPS.includes(type)) return ops.length;
+  const firstInner = ops.findIndex((o) => INNER_OPS.includes(o.type));
+  return firstInner === -1 ? ops.length : firstInner;
 }
 
 export function normalizeOps(raw: unknown, legacy = false): Op[] | null {

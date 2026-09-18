@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BlankShape, Op, OpType, Params, PPoint, Preset, Sample, ToolHand, ToolSpec, ToolType } from "../lib/lathe";
-import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, findZones, machineUV, makeOps, normalOffset, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
+import { ALL_OP_TYPES, BLANK_SHAPES, HAND_INFO, HOLDER2_ROT, INNER_OPS, INSERT_ANGLE, NOSE_RADII, OP_INFO, OUTER_OPS, PRESETS, ROUGH_MODES, STRATEGIES, defaultOpInsertIndex, findZones, machineUV, makeOps, normalOffset, outerFirstOps, outerFirstTypes, rotationalEnvelope, sampleProfile, thumbPath, toolProfile } from "../lib/lathe";
 import { cn } from "../utils/cn";
 import { IconBowl, IconCheck, IconCurve, IconEye, IconEyeOff, IconLayers, IconPlus, IconSpindle, IconSplit, IconTool, IconTrash } from "./icons";
 
@@ -36,8 +36,13 @@ function ControlsPanel({
   onIsolate,
   onNotify,
 }: Props) {
-  /* امضای استراتژی فعلی برای تشخیص پیش‌تنظیم فعال */
-  const sig = params.ops.filter((o) => o.on).map((o) => o.type).join(",");
+  /* امضای استراتژی فعلی برای تشخیص پیش‌تنظیم فعال (با قاعدهٔ پیش‌فرض: بیرونی‌ها اول) */
+  const sig = outerFirstOps(params.ops.filter((o) => o.on)).map((o) => o.type).join(",");
+
+  /* درگ‌ودراپ برای جابه‌جایی عملیات‌ها (کنار فلش‌ها) */
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dropEdge, setDropEdge] = useState<number | null>(null); // k = درج «قبل» از ردیف k (یا انتها اگر k=length)
+  const gripRef = useRef<number | null>(null);
 
   const setOps = (ops: Op[]) => onParams({ ops });
   const toggleHolder = (id: number) =>
@@ -62,7 +67,25 @@ function ControlsPanel({
   };
   const toggleOp = (id: number) => setOps(params.ops.map((o) => (o.id === id ? { ...o, on: !o.on } : o)));
   const removeOp = (id: number) => setOps(params.ops.filter((o) => o.id !== id));
-  const addOp = (type: OpType) => setOps([...params.ops, ...makeOps([type])]);
+  const addOp = (type: OpType) => {
+    const op = makeOps([type])[0];
+    const ops = [...params.ops];
+    ops.splice(defaultOpInsertIndex(ops, type), 0, op);
+    setOps(ops);
+  };
+  /* درگ‌ودراپ: برداشتن از دسته، رها روی لبهٔ رویی/زیری هر ردیف */
+  const reorderOps = (from: number, ins: number) => {
+    if (from === ins || from + 1 === ins) return;
+    const ops = [...params.ops];
+    const [m] = ops.splice(from, 1);
+    ops.splice(ins > from ? ins - 1 : ins, 0, m);
+    setOps(ops);
+  };
+  const endDrag = () => {
+    gripRef.current = null;
+    setDragFrom(null);
+    setDropEdge(null);
+  };
 
   const onTool = (patch: Partial<ToolSpec>) => onParams({ tool: { ...params.tool, ...patch } });
 
@@ -107,7 +130,7 @@ function ControlsPanel({
       <Section title="استراتژی تراش" icon={<IconCurve className="h-3.5 w-3.5 text-brass" />}>
         <div className="mb-2 grid grid-cols-2 gap-1.5">
           {STRATEGIES.map((st) => {
-            const on = sig === st.types.join(",");
+            const on = sig === outerFirstTypes(st.types).join(",");
             return (
               <button
                 key={st.id}
@@ -130,34 +153,85 @@ function ControlsPanel({
           {params.ops.map((op, i) => {
             const info = OP_INFO[op.type];
             const isolated = isolatedOpId === op.id;
+            const dragging = dragFrom === i;
             return (
               <div
                 key={op.id}
+                draggable
+                onDragStart={(e) => {
+                  if (gripRef.current !== i) {
+                    e.preventDefault();
+                    return;
+                  }
+                  e.dataTransfer.effectAllowed = "move";
+                  try {
+                    e.dataTransfer.setData("text/plain", String(op.id));
+                  } catch {
+                    /* ignore */
+                  }
+                  setDragFrom(i);
+                }}
+                onDragOver={(e) => {
+                  if (dragFrom == null) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setDropEdge(e.clientY < r.top + r.height / 2 ? i : i + 1);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragFrom != null && dropEdge != null) reorderOps(dragFrom, dropEdge);
+                  endDrag();
+                }}
+                onDragEnd={endDrag}
+                title={`${info.name} — ${info.desc}`}
                 className={cn(
-                  "group flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-all",
+                  "group relative flex cursor-grab items-center gap-1 rounded-md border px-1 py-[3px] transition-colors active:cursor-grabbing",
                   op.on ? "border-edge bg-panel2" : "border-edge/60 bg-panel opacity-50",
-                  isolated && "border-teal/70 bg-teal/10 shadow-[0_0_12px_rgba(69,179,148,0.18)]"
+                  isolated && "border-teal/70 bg-teal/10",
+                  dragging && "opacity-40"
                 )}
               >
+                {dragFrom != null && dropEdge === i && (
+                  <span className="pointer-events-none absolute -top-[3px] right-0 left-0 h-[2px] rounded-full bg-teal shadow-[0_0_6px_rgba(69,179,148,0.9)]" />
+                )}
+                {dragFrom != null && dropEdge === i + 1 && i === params.ops.length - 1 && (
+                  <span className="pointer-events-none absolute -bottom-[3px] right-0 left-0 h-[2px] rounded-full bg-teal shadow-[0_0_6px_rgba(69,179,148,0.9)]" />
+                )}
+                <button
+                  type="button"
+                  onPointerDown={() => {
+                    gripRef.current = i;
+                  }}
+                  onPointerUp={() => {
+                    if (dragFrom == null) gripRef.current = null;
+                  }}
+                  title="جابه‌جایی: ردیف را از اینجا بکشید"
+                  className="grid h-4 w-2.5 shrink-0 cursor-grab touch-none place-items-center rounded text-dim/50 transition-colors hover:text-brass active:cursor-grabbing"
+                >
+                  <svg viewBox="0 0 4 12" className="h-3 w-1 fill-current">
+                    <circle cx="1" cy="1" r="1" /><circle cx="3" cy="1" r="1" />
+                    <circle cx="1" cy="5" r="1" /><circle cx="3" cy="5" r="1" />
+                    <circle cx="1" cy="9" r="1" /><circle cx="3" cy="9" r="1" />
+                  </svg>
+                </button>
                 <button
                   onClick={() => onIsolate(isolated ? null : op.id)}
                   disabled={!op.on}
                   title={isolated ? "خروج از نمای ایزوله" : "مشاهدهٔ ایزولهٔ مسیر این عملیات در بوم"}
                   className={cn(
-                    "grid h-6 w-6 shrink-0 place-items-center rounded border transition-all",
-                    isolated
-                      ? "border-teal/60 bg-teal/15 text-teal"
-                      : "border-transparent text-dim hover:border-edge2 hover:text-teal",
-                    !op.on && "cursor-not-allowed opacity-30 hover:border-transparent hover:text-dim"
+                    "grid h-4.5 w-4.5 shrink-0 place-items-center rounded transition-colors",
+                    isolated ? "bg-teal/15 text-teal" : "text-dim hover:bg-panel3 hover:text-teal",
+                    !op.on && "cursor-not-allowed opacity-30 hover:bg-transparent hover:text-dim"
                   )}
                 >
-                  {isolated ? <IconEyeOff className="h-3.5 w-3.5" /> : <IconEye className="h-3.5 w-3.5" />}
+                  {isolated ? <IconEyeOff className="h-3 w-3" /> : <IconEye className="h-3 w-3" />}
                 </button>
                 <button
                   onClick={() => toggleHolder(op.id)}
-                  title={op.holder === 2 ? "هلدر ۲ — داخل‌تراش (تبدیل چرخش ‎−۹۰°‎ + آفست) — کلیک برای تغییر" : "هلدر ۱ — اصلی — کلیک برای تغییر"}
+                  title={op.holder === 2 ? "هلدر ۲ — داخل‌تراش — کلیک برای تغییر" : "هلدر ۱ — اصلی — کلیک برای تغییر"}
                   className={cn(
-                    "grid h-6 w-7 shrink-0 place-items-center rounded border font-mono text-[9px] font-bold transition-all",
+                    "grid h-4 min-w-[21px] shrink-0 place-items-center rounded border px-0.5 font-mono text-[8px] font-bold transition-colors",
                     op.holder === 2
                       ? "border-[#4cc9f0]/60 bg-[#4cc9f0]/15 text-[#4cc9f0]"
                       : "border-edge text-dim hover:border-edge2 hover:text-ink"
@@ -168,24 +242,21 @@ function ControlsPanel({
                 <button onClick={() => toggleOp(op.id)} className="shrink-0" title={op.on ? "غیرفعال کردن" : "فعال کردن"}>
                   <span
                     className={cn(
-                      "block h-4 w-7 rounded-full border p-0.5 transition-colors",
+                      "block h-3 w-5 rounded-full border p-[1.5px] transition-colors",
                       op.on ? "border-brass/60 bg-brass/25" : "border-edge2 bg-bg"
                     )}
                   >
                     <span
                       className={cn(
-                        "block h-2.5 w-2.5 rounded-full transition-transform",
-                        op.on ? "translate-x-0 bg-brass2" : "-translate-x-3 bg-dim"
+                        "block h-1.5 w-1.5 rounded-full transition-transform",
+                        op.on ? "translate-x-0 bg-brass2" : "-translate-x-[9px] bg-dim"
                       )}
                     />
                   </span>
                 </button>
-                <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: info.color }} />
-                <div className="min-w-0 flex-1 leading-tight">
-                  <div className="truncate text-[11px] font-bold text-ink/90">{info.name}</div>
-                  <div className="truncate text-[9.5px] text-dim">{info.desc}</div>
-                </div>
-                <div className="flex shrink-0 items-center gap-0.5">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-sm" style={{ background: info.color }} />
+                <span className="min-w-0 flex-1 truncate text-[10.5px] leading-none font-bold text-ink/90">{info.name}</span>
+                <div className="flex shrink-0 items-center gap-px">
                   <MiniBtn disabled={i === 0} onClick={() => moveOp(i, -1)} title="جلوتر">
                     <path d="M8 10 4 6l-4 4" transform="translate(4 2)" />
                   </MiniBtn>
@@ -193,7 +264,7 @@ function ControlsPanel({
                     <path d="M0 4 4 8l4-4" transform="translate(4 0)" />
                   </MiniBtn>
                   <MiniBtn danger onClick={() => removeOp(op.id)} title="حذف عملیات">
-                    <IconTrash className="h-3 w-3" />
+                    <IconTrash className="h-2.5 w-2.5" />
                   </MiniBtn>
                 </div>
               </div>
@@ -203,7 +274,7 @@ function ControlsPanel({
 
         <p className="mt-1.5 flex items-center gap-1.5 rounded-md bg-bg/50 px-2 py-1 text-[9.5px] text-dim">
           <IconEye className="h-3 w-3 shrink-0 text-teal" />
-          با نشانِ چشم، مسیر هر عملیات به‌تنهایی در بوم ایزوله می‌شود
+          جابه‌جایی: ردیف را از دستهٔ نقطه‌ای بکشید یا با فلش‌ها — چشم: نمایش ایزولهٔ مسیر
         </p>
 
         {/* افزودن عملیات */}
@@ -686,12 +757,12 @@ function MiniBtn({
       disabled={disabled}
       title={title}
       className={cn(
-        "grid h-5.5 w-5.5 place-items-center rounded border border-transparent text-mute transition-colors",
+        "grid h-4.5 w-4.5 place-items-center rounded border border-transparent text-mute transition-colors",
         danger ? "hover:border-danger/50 hover:text-danger" : "hover:border-edge2 hover:text-ink",
         disabled && "cursor-not-allowed opacity-25 hover:border-transparent hover:text-mute"
       )}
     >
-      <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
         {children}
       </svg>
     </button>
