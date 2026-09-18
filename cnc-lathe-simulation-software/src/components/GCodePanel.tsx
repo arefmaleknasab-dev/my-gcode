@@ -2,14 +2,10 @@ import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent } from 
 import type { GenResult } from "../lib/lathe";
 import { fmtTime } from "../lib/lathe";
 import { cn } from "../utils/cn";
-import { IconCode, IconCopy, IconDownload } from "./icons";
 
 interface Props {
   gen: GenResult;
   activeLine: number;
-  onCopy: () => void;
-  onDownload: () => void;
-  badge?: string;
 }
 
 const TOKEN_RE = /(%|\(.*?\)|[NO]\d+|G\d+(?:\.\d+)?|M\d+|[XYZ]-?\d+(?:\.\d+)?|[FSP]\d+(?:\.\d+)?)/g;
@@ -55,7 +51,7 @@ const GCodeLine = memo(function GCodeLine({ ln, parts, active, top }: RowProps) 
   );
 });
 
-export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge }: Props) {
+export default function GCodePanel({ gen, activeLine }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const highlighted = useMemo(() => gen.lines.map((l) => tokenize(l)), [gen.lines]);
@@ -115,32 +111,6 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-lg border border-edge bg-panel">
-      <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
-        <div className="flex items-center gap-2">
-          <IconCode className="h-4 w-4 text-brass" />
-          <h2 className="font-display text-[15px] leading-none text-ink">جی‌کد خروجی</h2>
-          <span className="flex items-center gap-1 rounded-full border border-edge bg-panel2 px-2 py-0.5 text-[10px] font-semibold text-mute">
-            <span className={cn("h-1.5 w-1.5 rounded-full", activeLine >= 0 ? "dot-live bg-ok" : "bg-brass")} />
-            {activeLine >= 0 ? "همگام با شبیه‌سازی" : "همگام با طرح"}
-          </span>
-          {badge && (
-            <span className="hidden items-center gap-1 rounded-full border border-[#4cc9f0]/40 bg-[#4cc9f0]/10 px-2 py-0.5 text-[10px] font-semibold text-[#4cc9f0] xl:flex">
-              {badge}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button className="btn !px-2 !py-1.5 text-[11.5px]" onClick={onCopy} title="کپی جی‌کد">
-            <IconCopy className="h-3.5 w-3.5" />
-            کپی
-          </button>
-          <button className="btn btn-brass !px-2 !py-1.5 text-[11.5px]" onClick={onDownload} title="دانلود فایل NC">
-            <IconDownload className="h-3.5 w-3.5" />
-            دانلود NC.
-          </button>
-        </div>
-      </div>
-
       {/* آمار */}
       <div className="grid grid-cols-4 gap-px border-b border-edge bg-edge">
         <Stat label="زمان تخمینی" value={fmtTime(gen.timeSec)} accent />
@@ -157,12 +127,6 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload, badge 
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-edge px-3 py-1.5 text-[10.5px] text-dim">
-        <span>{gen.lines.length} خط • {gen.segs.length} حرکت</span>
-        <span dir="ltr" className="font-mono">
-          {gen.format === "modal" ? "G21 • G40 • G90 • G49 • XY • X=L • Y=⌀ • M02" : "G21 • G18 • X/Z • X=⌀"}
-        </span>
-      </div>
     </div>
   );
 }

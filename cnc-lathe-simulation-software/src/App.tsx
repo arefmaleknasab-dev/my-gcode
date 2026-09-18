@@ -439,17 +439,7 @@ export default function App() {
           className="order-3 w-full shrink-0 @4xl:order-5"
           expandedClassName="h-[420px] @4xl:h-auto"
         >
-          <GCodePanel
-            gen={gen}
-            activeLine={activeLine}
-            onCopy={copyGCode}
-            onDownload={downloadGCode}
-            badge={
-              params.split.enabled
-                ? `کاسه • Split (X ${params.split.z} / ⌀ ${(params.split.r * 2).toFixed(1)}) • H2 (X ${params.holder2.xOff} / Y ${params.holder2.yOff})`
-                : undefined
-            }
-          />
+          <GCodePanel gen={gen} activeLine={activeLine} />
         </DockPanel>
       </div>
 
