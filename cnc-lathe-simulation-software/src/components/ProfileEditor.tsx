@@ -300,6 +300,7 @@ export default function ProfileEditor({
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const [ohv, setOhv] = useState<null | { id: number; part: "a" | "b" | "c1" | "c2" | "via" | "ln" }>(null);
+  const [rhv, setRhv] = useState<number | null>(null);
   const [guideHover, setGuideHover] = useState<null | "outer" | "inner">(null);
   const [tool, setTool] = useState<Tool>("select");
   const [draft, setDraft] = useState<SPoint[]>([]);
@@ -1010,6 +1011,22 @@ export default function ProfileEditor({
         drag.current = { mode: "guide", which: gd0.w, od0: params.offsetDist, r0: raw.r, moved: false };
         return;
       }
+      const rr = hitRun(loc0.x, loc0.y);
+      if (rr) {
+        const sid = nearestSegPx(loc0.x, loc0.y);
+        if (sid != null) {
+          const targets = ocopyTargets(sid, "ln");
+          const snaps = new Map<string, SPoint>();
+          for (const t of targets) {
+            const x = segs.find((q) => q.id === t.segId);
+            const v = x?.[t.part];
+            if (v) snaps.set(`${t.segId}:${t.part}`, v);
+          }
+          drag.current = { mode: "ocopy", kind: "l", part: "ln", targets, snaps, last0: raw, sx: e.clientX, sy: e.clientY, moved: false, clicked: sid };
+          setRhv(null);
+          return;
+        }
+      }
     }
     const s = hitSeg(raw);
     if (s) {
@@ -1054,9 +1071,12 @@ export default function ProfileEditor({
             if (g0) gh = g0.w;
           }
           setGuideHover(gh);
-        } else if (ohv != null || guideHover != null) {
+          const rr = !oc && !gh ? hitRun(loc.x, loc.y) : null;
+          setRhv(rr ? rr.i : null);
+        } else if (ohv != null || guideHover != null || rhv != null) {
           setOhv(null);
           setGuideHover(null);
+          setRhv(null);
         }
       } else if (tool === "split") {
         /* ابزار Split مغناطیسی به پروفیل می‌چسبد */
@@ -1660,6 +1680,36 @@ export default function ProfileEditor({
     return [...set.values()];
   };
 
+  /* گرفتنِ هر خطِ مسیر (لایه‌ها/پرداخت/کف…): نزدیک‌ترین المان پروفایل جابه‌جا می‌شود */
+  const hitRun = (x: number, y: number): { i: number; d: number } | null => {
+    let bi = -1;
+    let bd = 7;
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i];
+      if (r.kind === "rapid" || r.pl.length < 2) continue;
+      const dd = distToPl(r.pl, x, y);
+      if (dd < bd) {
+        bd = dd;
+        bi = i;
+      }
+    }
+    return bi >= 0 ? { i: bi, d: bd } : null;
+  };
+  const nearestSegPx = (x: number, y: number): number | null => {
+    if (!cam) return null;
+    let bi: number | null = null;
+    let bd = Infinity;
+    for (const q of segs) {
+      const poly = (q.kind === "line" ? [q.a, q.b] : segPoints(q, 14)).map((wp) => screenPt(cam, wp.z, wp.r));
+      const dd = distToPl(poly, x, y);
+      if (dd < bd) {
+        bd = dd;
+        bi = q.id;
+      }
+    }
+    return bi;
+  };
+
   const ghostPath = useMemo(() => {
     if (!cam || gen.samples.length < 2) return "";
     let d = "";
@@ -1917,6 +1967,10 @@ export default function ProfileEditor({
               </text>
             )}
           </g>
+        )}
+
+        {settings.editMode && rhv != null && runs[rhv] && (
+          <path d={runs[rhv].d} fill="none" stroke="#8bd5ff" strokeWidth={3} strokeOpacity={0.9} strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />
         )}
 
         {/* کپیِ افستِ قابل‌ویرایش — همتای ۱:۱ پروفایل روی خط بُرش */}
@@ -2397,7 +2451,7 @@ export default function ProfileEditor({
         <button
           type="button"
           onClick={() => onSettings({ editMode: !settings.editMode })}
-          title="حالت ادیت جی‌کد — ویرایشِ کپیِ افست‌شدهٔ پروفایل (۱:۱ با خودِ پروفایل): هر تغییر بلافاصله روی پروفایل و فایل جی‌کد اعمال می‌شود. درگِ خط‌چینِ راهنما = تنظیم فاصلهٔ آفست."
+          title="حالت ادیت جی‌کد — هر خطِ مسیر (لایه‌های بُرش، کپیِ افست ۱:۱، نقطه‌ها و دسته‌ها) قابل گرفتن است؛ هر تغییر بلافاصله روی پروفایل و فایل جی‌کد اعمال می‌شود. درگِ خط‌چینِ راهنما = تنظیم فاصلهٔ آفست."
           className={cn(
             "chip-toggle border-edge bg-panel/85 backdrop-blur-sm transition-all hover:border-edge2",
             settings.editMode ? "!border-teal/70 text-teal shadow-[0_0_10px_rgba(69,179,148,0.35)]" : "text-ink"
@@ -2413,7 +2467,7 @@ export default function ProfileEditor({
       {/* راهنمایِ حالت ادیت جی‌کد */}
       {settings.editMode && (
         <div className="anim-in pointer-events-none absolute top-2.5 left-1/2 z-10 -translate-x-1/2 rounded-full border border-teal/35 bg-panel/85 px-3 py-1 text-[10.5px] font-bold text-teal shadow-lg backdrop-blur-sm">
-          حالت ادیت جی‌کد — کپیِ افست را بکشید؛ تغییر روی پروفایل و فایل همزمان اعمال می‌شود
+          حالت ادیت جی‌کد — هر خط یا نقطه را بکشید؛ تغییر روی پروفایل و فایل همزمان اعمال می‌شود
         </div>
       )}
 
