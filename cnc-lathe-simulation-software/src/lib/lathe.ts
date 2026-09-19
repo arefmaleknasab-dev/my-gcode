@@ -574,8 +574,6 @@ export interface GenResult {
   segs: Seg[];
   samples: Sample[];
   innerSamples: Sample[]; // دیواره داخلی کاسه (خالی وقتی Split غیرفعال است)
-  offsetSamples: Sample[]; // خط آفست واقعی بیرون: آفست نرمال پروفایل +offsetDist (سقف خام)
-  innerOffSamples: Sample[]; // افست واقعی داخل‌تراشی: آفست نرمال دیواره −offsetDist به سمت حفره
   cutLen: number;
   rapidLen: number;
   timeSec: number;
@@ -791,8 +789,6 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
       segs: [],
       samples,
       innerSamples,
-      offsetSamples: [],
-      innerOffSamples: [],
       cutLen: 0,
       rapidLen: 0,
       timeSec: 0,
@@ -868,8 +864,6 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
   const OD = Math.max(0, p.offsetDist);
   /* خط آفست یکنواخت: آفست نرمال واقعی (نه r+OD شعاعی) + سقف قطر خام */
   const offSamples: Sample[] = normalOffset(samples, OD, true).map((s) => ({ z: s.z, r: Math.min(R, s.r) }));
-  /* همان آفستِ نرمالی که خشن‌داخل کاسه به آن تکیه می‌کند — برای نمایش در حالت ادیت */
-  const innerOffSamples: Sample[] = hasInner ? normalOffset(innerSamples, OD, false) : [];
   const floorR = minR + OD;
 
   /* ردیابی سطحِ واقعی تراش‌خورده برای محاسبهٔ امنِ جابه‌جایی‌های زیگزاگ — همانند   */
@@ -1514,8 +1508,6 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
     segs,
     samples,
     innerSamples,
-    offsetSamples: offSamples,
-    innerOffSamples,
     cutLen,
     rapidLen,
     timeSec,
