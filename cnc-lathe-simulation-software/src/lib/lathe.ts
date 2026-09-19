@@ -567,6 +567,7 @@ export interface Seg {
   note?: string[]; // کامنت‌های قبل از این حرکت (فقط فرمت استاندارد)
   fan?: number; // گسترش G0 این حرکت در جی‌کد (+قطر، فقط حرکت سریع طولی در/بالای رترکت؛ پیش‌فرض ۰)
   fanU?: number; // گسترش G0 در راستای محور (+طول، فقط بیرون قطعه یا رانش داخل‌خط تراورس؛ پیش‌فرض ۰)
+  ovrKey?: string; // کلید پایدار ویرایش تک‌خطی/تک‌نقطه‌ای (شناسه عملیات + شمارنده درون آن)
 }
 
 export interface GenResult {
@@ -1472,6 +1473,17 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
     });
   }
 
+  /* کلید پایدار برای ویرایش تک‌خطی/تک‌نقطه‌ای روی مسیر (بر اساس برنامه پایه) */
+  {
+    const ctr = new Map<string, number>();
+    for (const sg of segs) {
+      const kk = sg.opId < 0 ? "sys" : String(sg.opId);
+      const n = ctr.get(kk) ?? 0;
+      ctr.set(kk, n + 1);
+      sg.ovrKey = `${kk}:${n}`;
+    }
+  }
+
   /* قالب‌بندی خروجی بر اساس سبک انتخابی */
   const lines = p.format === "modal" ? buildModalLines(segs, p) : buildStdLines(segs, p);
 
@@ -1983,4 +1995,54 @@ export function fmtTime(sec: number): string {
   const s = Math.round(sec % 60);
   if (m >= 60) return `${Math.floor(m / 60)}س ${m % 60}د`;
   return m > 0 ? `${m}د و ${s}ث` : `${s} ثانیه`;
+}
+
+/* ---------------- اورلیِ ویرایش جی‌کد (حالت ادیت جی‌کدِ پنجرهٔ طراحی) ---------------- */
+/* هر خطِ مسیر = یک Seg با ovrKey پایدار؛ ویرایش‌ها به‌صورت پوششِ تک‌نقطه‌ای/تک‌خطی   */
+/* روی برنامهٔ پایه اعمال و سپس خط‌ها از نو ساخته می‌شوند. پس از هر تغییرِ پروفایل  */
+/* برنامه بازتولید می‌شود و کلیدهای یتیم (خطوطِ حذف/جابه‌جا شده) پاک می‌گردند.    */
+
+export interface GcodeOvr {
+  s?: { z: number; x: number }; // سرِ خط (مختصات کار: Z و قطر X)
+  e?: { z: number; x: number }; // دمِ خط
+  del?: boolean; // حذفِ کل خط از خروجی
+}
+export type GcodeOvrMap = Record<string, GcodeOvr>;
+
+export function applyGcodeOvr(base: GenResult, ovr: GcodeOvrMap, p: Params): GenResult {
+  if (!Object.keys(ovr).length) return base;
+  const kept: Seg[] = [];
+  for (const sg of base.segs) {
+    const o = sg.ovrKey ? ovr[sg.ovrKey] : undefined;
+    if (o?.del) continue;
+    if (!o?.s && !o?.e) {
+      kept.push(sg);
+      continue;
+    }
+    const ns: Seg = { ...sg };
+    if (o.s) {
+      ns.z1 = o.s.z;
+      ns.x1 = o.s.x;
+    }
+    if (o.e) {
+      ns.z2 = o.e.z;
+      ns.x2 = o.e.x;
+    }
+    kept.push(ns);
+  }
+  const lines = p.format === "modal" ? buildModalLines(kept, p) : buildStdLines(kept, p);
+  let cutLen = 0;
+  let rapidLen = 0;
+  let timeSec = 0;
+  for (const s2 of kept) {
+    const d = Math.hypot(s2.x2 - s2.x1, s2.z2 - s2.z1);
+    if (s2.motion === 1) {
+      cutLen += d;
+      timeSec += (d / Math.max(1, s2.feed)) * 60;
+    } else {
+      rapidLen += d;
+      timeSec += (d / RAPID_RATE) * 60;
+    }
+  }
+  return { ...base, segs: kept, lines, cutLen, rapidLen, timeSec };
 }
