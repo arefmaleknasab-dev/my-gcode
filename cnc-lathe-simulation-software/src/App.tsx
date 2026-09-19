@@ -7,8 +7,8 @@ import ProfileEditor, { type EdSettings } from "./components/ProfileEditor";
 import SimulationView from "./components/SimulationView";
 import { IconCheck, IconCode, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
 import { buildDxf } from "./lib/dxf";
-import { PRESETS, STRATEGIES, applyGcodeOvr, generate, makeOps, normalizeParams, presetPoints } from "./lib/lathe";
-import type { Params, PPoint, Preset, GcodeOvrMap } from "./lib/lathe";
+import { PRESETS, STRATEGIES, generate, makeOps, normalizeParams, presetPoints } from "./lib/lathe";
+import type { Params, PPoint, Preset } from "./lib/lathe";
 import type { SketchSeg } from "./lib/sketch";
 import { autoSplitPoint, branchPoints, chainPolyline, flattenSketch, normalizeSketch, orderChain, sketchFromPoints, sketchFromWall, splitChainAt } from "./lib/sketch";
 import { cn } from "./utils/cn";
@@ -94,62 +94,7 @@ export default function App() {
     return { points: flattenSketch(sketch, blankR, params.blankL), innerPoints: [] as PPoint[], splitInfo: none };
   }, [sketch, params.split, params.blankD, params.blankL]);
 
-  const genBase = useMemo(() => generate(points, params, innerPoints), [points, params, innerPoints]);
-
-  /* اورلیِ ویرایش جی‌کد (حالت ادیت جی‌کد در پنجرهٔ طراحی) — تک‌خط/تک‌نقطه، مستقل از پروفایل */
-  const [gcodeOvr, setGcodeOvr] = useState<GcodeOvrMap>({});
-  const gcPast = useRef<GcodeOvrMap[]>([]);
-  const gcFuture = useRef<GcodeOvrMap[]>([]);
-  const gcLiveBase = useRef<GcodeOvrMap | null>(null);
-  const gen = useMemo(() => applyGcodeOvr(genBase, gcodeOvr, params), [genBase, gcodeOvr, params]);
-  /* با هر بازتولید برنامه، کلیدهای یتیم (خطوط حذف/جابه‌جا شده) از اورلی می‌روند */
-  useEffect(() => {
-    setGcodeOvr((prev) => {
-      const n = Object.keys(prev).length;
-      if (!n) return prev;
-      const alive = new Set(genBase.segs.map((sg) => sg.ovrKey ?? ""));
-      const next: GcodeOvrMap = {};
-      for (const [k, v] of Object.entries(prev)) if (alive.has(k)) next[k] = v;
-      return Object.keys(next).length === n ? prev : next;
-    });
-  }, [genBase]);
-  const changeGcodeOvr = useCallback((next: GcodeOvrMap | null, commit: boolean) => {
-    if (!commit) {
-      if (gcLiveBase.current === null) gcLiveBase.current = gcodeOvr;
-      setGcodeOvr(next ?? {});
-      return;
-    }
-    const from = next === null ? (gcLiveBase.current ?? gcodeOvr) : gcLiveBase.current ?? gcodeOvr;
-    const to = next ?? gcodeOvr;
-    if (JSON.stringify(from) !== JSON.stringify(to)) {
-      gcPast.current.push(from);
-      if (gcPast.current.length > 100) gcPast.current.shift();
-      gcFuture.current = [];
-    }
-    gcLiveBase.current = null;
-    setGcodeOvr(to);
-    setHistVer((v) => v + 1);
-  }, [gcodeOvr]);
-  const gcUndo = () => {
-    if (!gcPast.current.length) return;
-    gcFuture.current.push(gcodeOvr);
-    setGcodeOvr(gcPast.current.pop()!);
-    setHistVer((v) => v + 1);
-  };
-  const gcRedo = () => {
-    if (!gcFuture.current.length) return;
-    gcPast.current.push(gcodeOvr);
-    setGcodeOvr(gcFuture.current.pop()!);
-    setHistVer((v) => v + 1);
-  };
-  const gcClearAll = () => {
-    if (!Object.keys(gcodeOvr).length) return;
-    gcPast.current.push(gcodeOvr);
-    gcFuture.current = [];
-    setGcodeOvr({});
-    gcLiveBase.current = null;
-    setHistVer((v) => v + 1);
-  };
+  const gen = useMemo(() => generate(points, params, innerPoints), [points, params, innerPoints]);
 
   /* ذخیره محلی */
   useEffect(() => {
@@ -449,14 +394,6 @@ export default function App() {
               onSelected={setSelectedIds}
               params={params}
               gen={gen}
-              gcodeOvr={gcodeOvr}
-              onGcodeOvr={changeGcodeOvr}
-              gcCanUndo={gcPast.current.length > 0}
-              gcCanRedo={gcFuture.current.length > 0}
-              gcEditsCount={Object.keys(gcodeOvr).length}
-              onGcUndo={gcUndo}
-              onGcRedo={gcRedo}
-              onGcClearAll={gcClearAll}
               split={params.split}
               onSplit={(s) => setParams((p) => ({ ...p, split: s }))}
               settings={settings}

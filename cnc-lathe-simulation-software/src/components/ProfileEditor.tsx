@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GcodeOvrMap, GenResult, Op, Params, Sample, SegKind, Seg, SplitState } from "../lib/lathe";
+import type { GenResult, Op, Params, Sample, SegKind, SplitState } from "../lib/lathe";
 import { OP_INFO } from "../lib/lathe";
 import type { SketchKind, SketchSeg, SnapPoint, SPoint } from "../lib/sketch";
 import {
@@ -53,7 +53,7 @@ import {
 export interface EdSettings {
   snap: number;
   smartSnap: boolean;
-  editMode: boolean; // حالت ادیت جی‌کد — اورلیِ تک‌خط/تک‌نقطه + راهنمای افست واقعی
+  editMode: boolean; // حالت ادیت جی‌کد — ویرایش کپیِ افستِ پروفایل (دوسویه با اسکچ)
   showRough: boolean;
   showFinish: boolean;
   showOffset: boolean;
@@ -95,14 +95,6 @@ interface Props {
   params: Params;
   gen: GenResult;
   onOffsetDist: (v: number) => void;
-  gcodeOvr: GcodeOvrMap;
-  onGcodeOvr: (next: GcodeOvrMap | null, commit: boolean) => void;
-  gcCanUndo: boolean;
-  gcCanRedo: boolean;
-  gcEditsCount: number;
-  onGcUndo: () => void;
-  onGcRedo: () => void;
-  onGcClearAll: () => void;
   split: SplitState;
   onSplit: (s: SplitState) => void;
   settings: EdSettings;
@@ -120,6 +112,43 @@ interface Cam {
   s: number;
   ox: number;
   oy: number;
+}
+
+/* ---------- هندسهٔ کپیِ افست (حالت ادیت جی‌کد) ---------- */
+interface OItem {
+  id: number;
+  pseudo: SketchSeg;
+  pl: [number, number][];
+  path: string;
+  pathM: string;
+  handles: { part: "a" | "b" | "c1" | "c2" | "via"; p: [number, number] }[];
+}
+
+const plToD = (pl: [number, number][]): string =>
+  pl.length < 2 ? "" : pl.map((pt, i) => `${i ? "L" : "M"} ${pt[0].toFixed(1)} ${pt[1].toFixed(1)}`).join(" ");
+
+const circumOf = (a: SPoint, m: SPoint, b: SPoint): { c: SPoint; R: number } | null => {
+  const dn = 2 * (a.z * (m.r - b.r) + m.z * (b.r - a.r) + b.z * (a.r - m.r));
+  if (Math.abs(dn) < 1e-9) return null;
+  const q = (p: SPoint): number => p.z * p.z + p.r * p.r;
+  const cz = (q(a) * (m.r - b.r) + q(m) * (b.r - a.r) + q(b) * (a.r - m.r)) / dn;
+  const cr = (q(a) * (b.z - m.z) + q(m) * (a.z - b.z) + q(b) * (m.z - a.z)) / dn;
+  return { c: { z: cz, r: cr }, R: Math.hypot(a.z - cz, a.r - cr) };
+};
+
+/* آفست با نرمالِ وتر (کنترل‌ها هم‌زمان جابه‌جا می‌شوند → topology دقیقاً ۱:۱ می‌ماند) */
+function chordOffset(x: SketchSeg, d: number): SketchSeg {
+  const tz = x.b.z - x.a.z;
+  const tr = x.b.r - x.a.r;
+  const l = Math.hypot(tz, tr) || 1;
+  const nz = (-tr / l) * d;
+  const nr = (tz / l) * d;
+  const sh = (q: SPoint): SPoint => ({ z: q.z + nz, r: q.r + nr });
+  const out: SketchSeg = { ...x, a: sh(x.a), b: sh(x.b) };
+  if (x.c1) out.c1 = sh(x.c1);
+  if (x.c2) out.c2 = sh(x.c2);
+  if (x.via) out.via = sh(x.via);
+  return out;
 }
 
 const SEG_COLOR: Record<SegKind, string> = {
@@ -253,14 +282,6 @@ export default function ProfileEditor({
   split,
   onSplit,
   onOffsetDist,
-  gcodeOvr,
-  onGcodeOvr,
-  gcCanUndo,
-  gcCanRedo,
-  gcEditsCount,
-  onGcUndo,
-  onGcRedo,
-  onGcClearAll,
   settings,
   onSettings,
   ops,
@@ -278,8 +299,7 @@ export default function ProfileEditor({
   const [cam, setCam] = useState<Cam | null>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
-  const [gsel, setGsel] = useState<{ lns: string[]; pts: { key: string; ep: "s" | "e" }[] }>({ lns: [], pts: [] });
-  const [ghv, setGhv] = useState<null | { t: "pt"; i: number; ep: "s" | "e" } | { t: "ln"; i: number }>(null);
+  const [ohv, setOhv] = useState<null | { id: number; part: "a" | "b" | "c1" | "c2" | "via" | "ln" }>(null);
   const [guideHover, setGuideHover] = useState<null | "outer" | "inner">(null);
   const [tool, setTool] = useState<Tool>("select");
   const [draft, setDraft] = useState<SPoint[]>([]);
@@ -427,17 +447,11 @@ export default function ProfileEditor({
         else if (tool !== "select") setTool("select");
         else if (selPoints.length) setSelPoints([]);
         else if (selected.length) onSelected([]);
-        else if (settingsRef.current.editMode && (gsel.lns.length || gsel.pts.length)) setGsel({ lns: [], pts: [] });
         else if (settingsRef.current.editMode) onSettings({ editMode: false });
         else onSelected([]);
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (settingsRef.current.editMode && (gsel.lns.length || gsel.pts.length)) {
-          e.preventDefault();
-          deleteGcodeSelection();
-          return;
-        }
         if (selPoints.length) {
           e.preventDefault();
           deleteSelectedPoints();
@@ -459,7 +473,7 @@ export default function ProfileEditor({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, selected, tool, isolatedOpId, segs, selFilter, selPoints, gsel]);
+  }, [draft, selected, tool, isolatedOpId, segs, selFilter, selPoints]);
 
   /* نگه‌داشتن Space برای پن موقت */
   useEffect(() => {
@@ -689,6 +703,10 @@ export default function ProfileEditor({
     for (const s of segs) {
       if (!filterAllows(s.kind)) continue;
       if (segHitsRect(s, rectW, mode)) out.push(s.id);
+    }
+    if (settings.editMode) {
+      /* کپیِ افست هم انتخاب می‌شود (منبعش در پروفایل) */
+      for (const o of ocopy) if (!out.includes(o.id) && segHitsRect(o.pseudo, rectW, mode)) out.push(o.id);
     }
     return out;
   };
@@ -922,7 +940,7 @@ export default function ProfileEditor({
     | { mode: "draw"; sx: number; sy: number; cam0: Cam; moved: boolean }
     | { mode: "marquee"; sx: number; sy: number; base: number[]; moved: boolean }
     | { mode: "rwait"; sx: number; sy: number; cam0: Cam; moved: boolean }
-    | { mode: "gdrag"; pts: { key: string; ep: "s" | "e" }[]; lns: string[]; orig: Map<string, [number, number, number, number]>; last: { x: number; y: number }; sx: number; sy: number; acc: [number, number]; moved: boolean }
+    | { mode: "ocopy"; kind: "h" | "l"; part: "a" | "b" | "c1" | "c2" | "via" | "ln"; targets: { segId: number; part: "a" | "b" | "c1" | "c2" | "via" }[]; snaps: Map<string, SPoint>; last0: SPoint; sx: number; sy: number; moved: boolean; clicked: number }
     | { mode: "guide"; which: "outer" | "inner"; od0: number; r0: number; moved: boolean }
     | null
   >(null);
@@ -971,48 +989,25 @@ export default function ProfileEditor({
       return;
     }
     if (settings.editMode) {
-      /* اولویت گرفتن: نقطه > راهنمای آفست > خطِ بُرش */
+      /* اولویت گرفتن: دستهٔ کپی > خطِ کپی > راهنمای آفست (تنظیم فاصله) */
       const loc0 = toLocal(e.clientX, e.clientY);
-      const gh = hitGcode(loc0.x, loc0.y, true);
-      const gd0 = guideDist(loc0.x, loc0.y);
-      if (gh && gh.t === "pt" && !(gd0 && gh.d > gd0.d + 1)) {
-        const g = gsegs[gh.i];
-        let pts: { key: string; ep: "s" | "e" }[] = [];
-        const shift = e.shiftKey;
-        const exists = gsel.pts.some((q) => q.key === g.key && q.ep === gh.ep);
-        pts = shift ? (exists ? gsel.pts : [...gsel.pts, { key: g.key, ep: gh.ep }]) : [{ key: g.key, ep: gh.ep }];
-        const lns = shift ? [...gsel.lns] : [];
-        setGsel({ lns, pts });
-        const orig = new Map<string, [number, number, number, number]>();
-        const grab = (k: string) => {
-          const gg = gsegs.find((x) => x.key === k);
-          if (gg) orig.set(k, [gg.sg.z1, gg.sg.x1, gg.sg.z2, gg.sg.x2]);
-        };
-        for (const k of lns) grab(k);
-        for (const q of pts) grab(q.key);
-        drag.current = { mode: "gdrag", pts, lns, orig, last: { x: e.clientX, y: e.clientY }, sx: e.clientX, sy: e.clientY, acc: [0, 0], moved: false };
-        setGhv(null);
+      const oc = hitOcopy(loc0.x, loc0.y);
+      if (oc) {
+        const part = oc.part;
+        const targets = ocopyTargets(oc.id, part);
+        const snaps = new Map<string, SPoint>();
+        for (const t of targets) {
+          const x = segs.find((q) => q.id === t.segId);
+          const v = x?.[t.part];
+          if (v) snaps.set(`${t.segId}:${t.part}`, v);
+        }
+        drag.current = { mode: "ocopy", kind: part === "ln" ? "l" : "h", part, targets, snaps, last0: raw, sx: e.clientX, sy: e.clientY, moved: false, clicked: oc.id };
+        setOhv(null);
         return;
       }
+      const gd0 = guideDist(loc0.x, loc0.y);
       if (gd0) {
         drag.current = { mode: "guide", which: gd0.w, od0: params.offsetDist, r0: raw.r, moved: false };
-        return;
-      }
-      const gh2 = hitGcode(loc0.x, loc0.y, false);
-      if (gh2) {
-        const g = gsegs[gh2.i];
-        const shift = e.shiftKey;
-        const lns = shift ? (gsel.lns.includes(g.key) ? gsel.lns : [...gsel.lns, g.key]) : [g.key];
-        const pts = shift ? [...gsel.pts] : [];
-        setGsel({ lns, pts });
-        const orig = new Map<string, [number, number, number, number]>();
-        const grab = (k: string) => {
-          const gg = gsegs.find((x) => x.key === k);
-          if (gg) orig.set(k, [gg.sg.z1, gg.sg.x1, gg.sg.z2, gg.sg.x2]);
-        };
-        for (const k of lns) grab(k);
-        drag.current = { mode: "gdrag", pts, lns, orig, last: { x: e.clientX, y: e.clientY }, sx: e.clientX, sy: e.clientY, acc: [0, 0], moved: false };
-        setGhv(null);
         return;
       }
     }
@@ -1051,15 +1046,16 @@ export default function ProfileEditor({
         setSnapHit(null);
         if (settings.editMode) {
           const loc = toLocal(e.clientX, e.clientY);
-          const nh0 = onHandle ? null : hitGcode(loc.x, loc.y, true);
-          const gd0 = onHandle ? null : guideDist(loc.x, loc.y);
+          const oc = onHandle ? null : hitOcopy(loc.x, loc.y);
+          setOhv(oc ? { id: oc.id, part: oc.part } : null);
           let gh: null | "outer" | "inner" = null;
-          if (gd0 && (!nh0 || nh0.d > gd0.d + 1)) gh = gd0.w;
-          const nh = gh ? null : (nh0?.t === "pt" ? nh0 : (!onHandle ? hitGcode(loc.x, loc.y, false) : null));
-          setGhv(nh);
+          if (!oc && guideData) {
+            const g0 = guideDist(loc.x, loc.y);
+            if (g0) gh = g0.w;
+          }
           setGuideHover(gh);
-        } else if (ghv != null || guideHover != null) {
-          setGhv(null);
+        } else if (ohv != null || guideHover != null) {
+          setOhv(null);
           setGuideHover(null);
         }
       } else if (tool === "split") {
@@ -1174,25 +1170,19 @@ export default function ProfileEditor({
       return;
     }
 
-    if (d.mode === "gdrag") {
+    if (d.mode === "ocopy") {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return;
       d.moved = true;
-      const c = camRef.current!;
-      d.acc = [d.acc[0] + (e.clientX - d.last.x) / c.s, d.acc[1] - (e.clientY - d.last.y) / c.s];
-      d.last = { x: e.clientX, y: e.clientY };
-      const next: GcodeOvrMap = { ...gcodeOvr };
-      const addEp = (k: string, ep: "s" | "e" | "both") => {
-        const o = d.orig.get(k);
-        if (!o) return;
-        const ent = { ...next[k] };
-        delete ent.del;
-        if (ep === "s" || ep === "both") ent.s = { z: o[0] + d.acc[0], x: o[1] + 2 * d.acc[1] };
-        if (ep === "e" || ep === "both") ent.e = { z: o[2] + d.acc[0], x: o[3] + 2 * d.acc[1] };
-        next[k] = ent;
-      };
-      for (const k of d.lns) addEp(k, "both");
-      for (const q of d.pts) if (!d.lns.includes(q.key)) addEp(q.key, q.ep);
-      onGcodeOvr(next, false);
+      const dz = raw.z - d.last0.z;
+      const dr = raw.r - d.last0.r;
+      let next = segs;
+      for (const t of d.targets) {
+        const o = d.snaps.get(`${t.segId}:${t.part}`);
+        if (!o) continue;
+        const np = { z: o.z + dz, r: o.r + dr };
+        next = next.map((x) => (x.id === t.segId && x[t.part] ? ({ ...x, [t.part]: np } as SketchSeg) : x));
+      }
+      onSegs(next, false);
       return;
     }
     if (d.mode === "guide") {
@@ -1277,7 +1267,6 @@ export default function ProfileEditor({
         if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
           onSelected([]);
           setSelPoints([]);
-          if (settings.editMode) setGsel({ lns: [], pts: [] });
         }
         return;
       }
@@ -1306,8 +1295,18 @@ export default function ProfileEditor({
       return;
     }
 
-    if (d?.mode === "gdrag") {
-      if (d.moved) onGcodeOvr(null, true);
+    if (d?.mode === "ocopy") {
+      if (d.moved) {
+        onSegs(segs, true); // ثبت در تاریخچهٔ اصلی (یک قدم برای کل درگ)
+      } else if (d.kind === "l") {
+        const id = d.clicked;
+        if (e.shiftKey) onSelected(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+        else if (e.ctrlKey || e.metaKey) onSelected(selected.filter((x) => x !== id));
+        else onSelected([id]);
+      } else {
+        const id = d.targets[0]?.segId;
+        if (id != null && !selected.includes(id)) onSelected([id]);
+      }
       return;
     }
 
@@ -1525,22 +1524,6 @@ export default function ProfileEditor({
     return bd;
   };
 
-  /* ---------- مدل ویرایش جی‌کد: هر Seg = یک خط با کلید ovrKey ---------- */
-  const gsegs = useMemo(() => {
-    if (!cam || !settings.editMode) return [] as { key: string; sg: Seg; ax: number; ay: number; bx: number; by: number; sel: number }[];
-    const out: { key: string; sg: Seg; ax: number; ay: number; bx: number; by: number; sel: number }[] = [];
-    gen.segs.forEach((sg, i) => {
-      if (sg.kind === "rapid") return; // فقط خط‌های بُرش — رپیدهای G0 درگیر ویرایش دستی نمی‌شوند
-      const key = sg.ovrKey ?? `#${i}`;
-      const a = screenPt(cam, sg.z1 + (sg.fanU ?? 0), (sg.x1 + (sg.fan ?? 0)) / 2);
-      const b = screenPt(cam, sg.z2 + (sg.fanU ?? 0), (sg.x2 + (sg.fan ?? 0)) / 2);
-      const pSel = (gsel.pts.some((q) => q.key === key && q.ep === "s") ? 1 : 0) | (gsel.pts.some((q) => q.key === key && q.ep === "e") ? 2 : 0);
-      out.push({ key, sg, ax: a[0], ay: a[1], bx: b[0], by: b[1], sel: (gsel.lns.includes(key) ? 1 : 0) | (pSel << 1) });
-    });
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cam, settings.editMode, gen.segs, gsel]);
-
   const guideDist = (x: number, y: number): { w: "inner" | "outer"; d: number } | null => {
     if (!guideData) return null;
     const di = guideData.innerPl.length > 1 ? distToPl(guideData.innerPl, x, y) : Infinity;
@@ -1550,87 +1533,131 @@ export default function ProfileEditor({
     return null;
   };
 
-  const hitGcode = (x: number, y: number, ptsOnly = false): { t: "pt"; i: number; ep: "s" | "e"; d: number } | { t: "ln"; i: number; d: number } | null => {
-    let bp = -1;
-    let bpd = 6;
-    let bep: "s" | "e" = "s";
+  /* ---------- کپیِ افست‌شدهٔ پروفایل (حالت ادیت جی‌کد) ----------
+     هر المان اسکچ یک همتای قابل‌گرفتن روی خط بُرش دارد: همان منحنی، همان
+     دسته‌ها، جابه‌جا به فاصلهٔ واقعیِ آفست. درگ روی کپی = درگ روی خودِ پروفایل. */
+  const ocopy = useMemo(() => {
+    if (!cam || !settings.editMode) return [] as OItem[];
+    const D = params.offsetDist;
+    const signFor = (side: "outer" | "inner"): 1 | -1 => {
+      const pl = side === "inner" ? guideData?.innerPl : guideData?.outerPl;
+      const pickR = side === "inner" ? -1 : 1; // بدون راهنما: بیرون = +r، داخل = -r
+      if (!pl || pl.length < 2) return pickR as 1 | -1;
+      let sp = 0;
+      let sn = 0;
+      for (const s of segs) {
+        if ((segSide.get(s.id) ?? "outer") !== side) continue;
+        const t = { z: s.b.z - s.a.z, r: s.b.r - s.a.r };
+        const l = Math.hypot(t.z, t.r) || 1;
+        const nx = (-t.r / l) * D;
+        const nr = (t.z / l) * D;
+        const mid = { z: (s.a.z + s.b.z) / 2, r: (s.a.r + s.b.r) / 2 };
+        const p1 = screenPt(cam, mid.z + nx, mid.r + nr);
+        const p0 = screenPt(cam, mid.z - nx, mid.r - nr);
+        sp += distToPl(pl, p1[0], p1[1]);
+        sn += distToPl(pl, p0[0], p0[1]);
+      }
+      if (sp === 0 && sn === 0) return pickR as 1 | -1;
+      return sp <= sn ? 1 : -1;
+    };
+    const sg = { outer: signFor("outer"), inner: signFor("inner") };
+    const out: OItem[] = [];
+    for (const x of segs) {
+      const side = segSide.get(x.id) ?? "outer";
+      const d = D * sg[side];
+      let pseudo: SketchSeg;
+      if (x.kind === "arc" && x.via) {
+        const ci = circumOf(x.a, x.via, x.b);
+        if (ci && ci.R > 1e-9) {
+          const k = (ci.R + d) / ci.R;
+          const sc = (q: SPoint): SPoint => ({ z: ci.c.z + (q.z - ci.c.z) * k, r: ci.c.r + (q.r - ci.c.r) * k });
+          pseudo = { ...x, a: sc(x.a), b: sc(x.b), via: sc(x.via) };
+        } else {
+          pseudo = chordOffset(x, d);
+        }
+      } else {
+        pseudo = chordOffset(x, d);
+      }
+      const poly = pseudo.kind === "line" ? [pseudo.a, pseudo.b] : segPoints(pseudo, 20);
+      const pl = poly.map((w) => screenPt(cam, w.z, w.r));
+      const hp = (q: SPoint): [number, number] => screenPt(cam, q.z, q.r);
+      const handles: OItem["handles"] = [
+        { part: "a", p: hp(pseudo.a) },
+        { part: "b", p: hp(pseudo.b) },
+      ];
+      if (pseudo.via) handles.push({ part: "via", p: hp(pseudo.via) });
+      if (pseudo.c1) handles.push({ part: "c1", p: hp(pseudo.c1) });
+      if (pseudo.c2) handles.push({ part: "c2", p: hp(pseudo.c2) });
+      out.push({
+        id: x.id,
+        pseudo,
+        pl,
+        path: plToD(pl),
+        pathM: plToD(pl.map(([px, py]) => [px, 2 * cam.oy - py] as [number, number])),
+        handles,
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cam, settings.editMode, segs, segSide, params.offsetDist, guideData]);
+
+  type OPart = "a" | "b" | "c1" | "c2" | "via" | "ln";
+  const hitOcopy = (x: number, y: number): { id: number; part: OPart } | null => {
+    if (!ocopy.length) return null;
+    let bp: { id: number; part: OPart } | null = null;
+    let bd = 9;
     let bl = -1;
     let bld = 7;
-    for (let i = 0; i < gsegs.length; i++) {
-      const g = gsegs[i];
-      const da = Math.hypot(g.ax - x, g.ay - y);
-      const db = Math.hypot(g.bx - x, g.by - y);
-      const d = da < db ? da : db;
-      if (d < bpd) {
-        bpd = d;
-        bp = i;
-        bep = da < db ? "s" : "e";
+    for (const o of ocopy) {
+      for (const hd of o.handles) {
+        const ctrl = hd.part === "c1" || hd.part === "c2";
+        if (ctrl && !selected.includes(o.id)) continue;
+        const dd = Math.hypot(hd.p[0] - x, hd.p[1] - y);
+        if (dd < bd) {
+          bd = dd;
+          bp = { id: o.id, part: hd.part };
+        }
       }
-      if (ptsOnly) continue;
-      const dx = g.bx - g.ax;
-      const dy = g.by - g.ay;
-      const l2 = dx * dx + dy * dy;
-      const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - g.ax) * dx + (y - g.ay) * dy) / l2)) : 0;
-      const dl = Math.hypot(x - (g.ax + t * dx), y - (g.ay + t * dy));
-      if (dl < bld) {
-        bld = dl;
-        bl = i;
+      for (let i = 0; i + 1 < o.pl.length; i++) {
+        const [x1, y1] = o.pl[i];
+        const [x2, y2] = o.pl[i + 1];
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const l2 = dx * dx + dy * dy;
+        const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / l2)) : 0;
+        const dd = Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
+        if (dd < bld) {
+          bld = dd;
+          bl = o.id;
+        }
       }
     }
-    if (bp >= 0) return { t: "pt", i: bp, ep: bep, d: bpd };
-    if (bl >= 0) return { t: "ln", i: bl, d: bld };
+    if (bp) return bp;
+    if (bl >= 0) return { id: bl, part: "ln" };
     return null;
   };
 
-  /* حذف/جمعِ نقطه: اگر نقطه مفصلِ دو خطِ متوالی باشد، هر دو سر به میانگینِ سرِ
-     بیرونیِ اول و سرِ بیرونیِ دوم می‌روند (دو خط هم‌راستا = یک خطِ پیوسته)؛
-     در غیر این صورت خطِ میزبان حذف می‌شود */
-  const deleteGcodeSelection = () => {
-    if (!gsel.lns.length && !gsel.pts.length) return;
-    const next: GcodeOvrMap = { ...gcodeOvr };
-    const byKey = new Map(gsegs.map((g) => [g.key, g]));
-    for (const k of gsel.lns) next[k] = { ...next[k], del: true };
-    for (const q of gsel.pts) {
-      const idx = gen.segs.findIndex((sg, i) => (sg.ovrKey ?? `#${i}`) === q.key);
-      if (idx < 0) continue;
-      const me = gen.segs[idx];
-      const view = (sg: Seg, end: boolean): [number, number] => [sg[end ? "z2" : "z1"] + (sg.fanU ?? 0), (sg[end ? "x2" : "x1"] + (sg.fan ?? 0)) / 2];
-      const tol = 1e-6;
-      let prev: Seg | null = null;
-      let nxt: Seg | null = null;
-      if (q.ep === "e" && idx + 1 < gen.segs.length) {
-        const [ux, uy] = view(me, true);
-        const [vx, vy] = view(gen.segs[idx + 1], false);
-        if (Math.abs(ux - vx) < tol && Math.abs(uy - vy) < tol) nxt = gen.segs[idx + 1];
-      }
-      if (q.ep === "s" && idx > 0) {
-        const [ux, uy] = view(me, false);
-        const [vx, vy] = view(gen.segs[idx - 1], true);
-        if (Math.abs(ux - vx) < tol && Math.abs(uy - vy) < tol) prev = gen.segs[idx - 1];
-      }
-      if (prev && nxt) {
-        const pa = view(prev, false);
-        const nb = view(nxt, true);
-        const mz = (pa[0] + nb[0]) / 2;
-        const mr = (pa[1] + nb[1]) / 2;
-        const pk = prev.ovrKey ?? `#${gen.segs.indexOf(prev)}`;
-        const nk = nxt.ovrKey ?? `#${gen.segs.indexOf(nxt)}`;
-        next[pk] = { ...next[pk], e: { z: mz, x: 2 * mr } };
-        next[nk] = { ...next[nk], s: { z: mz, x: 2 * mr } };
-      } else if ((prev || nxt) && byKey.has(q.key)) {
-        /* مفصلِ تک‌طرفه: نقطه به سرِ بیرونیِ همان خط جمع می‌شود (خط صفرطول می‌شود و حذف می‌گردد) */
-        const other = prev ? view(prev, false) : view(nxt!, true);
-        next[q.key] = { ...next[q.key], [q.ep]: { z: other[0], x: 2 * other[1] } };
-        const self = me;
-        const sView = view(self, false);
-        const eView = view(self, true);
-        if (Math.abs(sView[0] - eView[0]) < tol && Math.abs(sView[1] - eView[1]) < tol) next[q.key] = { ...next[q.key], del: true };
+  /* نقاطی که با درگِ یک خطِ کپی باید حرکت کنند: المان(های) درگیر + سرهای هم‌مکانِ همسایه‌ها */
+  const ocopyTargets = (id: number, part: "a" | "b" | "c1" | "c2" | "via" | "ln"): { segId: number; part: "a" | "b" | "c1" | "c2" | "via" }[] => {
+    const set = new Map<string, { segId: number; part: "a" | "b" | "c1" | "c2" | "via" }>();
+    const ids = part === "ln" ? (selected.includes(id) ? selected : [id]) : [id];
+    for (const sid of ids) {
+      const x = segs.find((q) => q.id === sid);
+      if (!x) continue;
+      if (part === "ln") {
+        for (const pp of ["a", "b", "c1", "c2", "via"] as const) {
+          if (x[pp]) set.set(`${sid}:${pp}`, { segId: sid, part: pp });
+        }
+        /* سرهای متصل: خوشهٔ مشترک را هم بکش تا زنجیره پاره نشود */
+        for (const pp of ["a", "b"] as const) {
+          for (const c of clusterOf(sid, pp)) if (!ids.includes(c.segId)) set.set(`${c.segId}:${c.part}`, { segId: c.segId, part: c.part });
+        }
       } else {
-        next[q.key] = { ...next[q.key], del: true };
+        if (part === "a" || part === "b") for (const c of clusterOf(sid, part)) set.set(`${c.segId}:${c.part}`, { segId: c.segId, part: c.part });
+        else set.set(`${sid}:${part}`, { segId: sid, part });
       }
     }
-    onGcodeOvr(next, true);
-    setGsel({ lns: [], pts: [] });
+    return [...set.values()];
   };
 
   const ghostPath = useMemo(() => {
@@ -1889,26 +1916,55 @@ export default function ProfileEditor({
                 آفست Δ{params.offsetDist.toFixed(2)}
               </text>
             )}
-            {ghv && gsegs[ghv.i] && (ghv.t === "ln" ? (
-              <line x1={gsegs[ghv.i].ax} y1={gsegs[ghv.i].ay} x2={gsegs[ghv.i].bx} y2={gsegs[ghv.i].by} stroke="#45b394" strokeWidth={3} strokeOpacity={0.85} strokeLinecap="round" />
-            ) : (
-              <circle cx={ghv.ep === "s" ? gsegs[ghv.i].ax : gsegs[ghv.i].bx} cy={ghv.ep === "s" ? gsegs[ghv.i].ay : gsegs[ghv.i].by} r={5.5} fill="none" stroke="#45b394" strokeWidth={2} />
-            ))}
           </g>
         )}
 
-        {/* هایلایت انتخاب و نقطه‌های انتهاییِ خطوطِ جی‌کد */}
-        {settings.editMode && (
-          <g>
-            {gsegs.map((g) =>
-              g.sel & 1 ? <line key={`l${g.key}`} x1={g.ax} y1={g.ay} x2={g.bx} y2={g.by} stroke="#ffd27a" strokeWidth={2.8} strokeOpacity={0.95} strokeLinecap="round" style={{ pointerEvents: "none" }} /> : null
-            )}
-            {gsegs.map((g) => (
-              <g key={`p${g.key}`} style={{ pointerEvents: "none" }}>
-                <circle cx={g.ax} cy={g.ay} r={g.sel & 2 ? 4.8 : 2.9} fill={g.sel & 2 ? "#241c12" : "#120e09"} stroke={g.sel & 2 ? "#ffd27a" : "#8bd5ff"} strokeWidth={g.sel & 2 ? 2.2 : 1.2} />
-                <circle cx={g.bx} cy={g.by} r={g.sel & 4 ? 4.8 : 2.9} fill={g.sel & 4 ? "#241c12" : "#120e09"} stroke={g.sel & 4 ? "#ffd27a" : "#8bd5ff"} strokeWidth={g.sel & 4 ? 2.2 : 1.2} />
-              </g>
+        {/* کپیِ افستِ قابل‌ویرایش — همتای ۱:۱ پروفایل روی خط بُرش */}
+        {settings.editMode && ocopy.length > 0 && (
+          <g style={{ pointerEvents: "none" }}>
+            {ocopy.map((o) => (
+              <path key={`ocm${o.id}`} d={o.pathM} fill="none" stroke="#45b394" strokeOpacity={0.22} strokeWidth={1.6} strokeLinecap="round" />
             ))}
+            {ocopy.map((o) => {
+              const isSel = selected.includes(o.id);
+              const hov = ohv?.id === o.id;
+              return (
+                <path
+                  key={`oc${o.id}`}
+                  d={o.path}
+                  fill="none"
+                  stroke={isSel ? "#ffd27a" : "#45b394"}
+                  strokeWidth={hov ? 3.4 : isSel ? 2.8 : 2}
+                  strokeOpacity={hov || isSel ? 1 : 0.85}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  filter={hov || isSel ? "url(#curveGlow)" : undefined}
+                />
+              );
+            })}
+            {ocopy.map((o) => {
+              const isSel = selected.includes(o.id);
+              return (
+                <g key={`ocp${o.id}`}>
+                  {o.handles.map((hd) => {
+                    const ctrl = hd.part === "c1" || hd.part === "c2";
+                    if (ctrl && !isSel) return null;
+                    const on = ohv?.id === o.id && ohv?.part === hd.part;
+                    const stem = hd.part === "c1" ? o.handles.find((q) => q.part === "b") : hd.part === "c2" ? o.handles.find((q) => q.part === "a") : null;
+                    return (
+                      <g key={hd.part}>
+                        {stem && <line x1={stem.p[0]} y1={stem.p[1]} x2={hd.p[0]} y2={hd.p[1]} stroke="#45b394" strokeOpacity={0.5} strokeWidth={1} strokeDasharray="3 3" />}
+                        {ctrl ? (
+                          <rect x={hd.p[0] - 3.6} y={hd.p[1] - 3.6} width={7.2} height={7.2} rx={1.4} fill={on ? "#ffd27a" : "#7fe0bd"} stroke="#120e09" strokeWidth={1} />
+                        ) : (
+                          <circle cx={hd.p[0]} cy={hd.p[1]} r={on ? 5.6 : hd.part === "via" ? 3.8 : 4.4} fill={on ? "#ffd27a" : "#f4f9ff"} stroke="#120e09" strokeWidth={1.2} />
+                        )}
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
           </g>
         )}
 
@@ -2341,7 +2397,7 @@ export default function ProfileEditor({
         <button
           type="button"
           onClick={() => onSettings({ editMode: !settings.editMode })}
-          title="حالت ادیت جی‌کد — ویرایش تک‌خط و تک‌نقطه‌ای مستقیم روی مسیر اجرا + نمایش افست واقعی داخل‌تراشی (درگِ خط آبیِ راهنما = تنظیم فاصلهٔ آفست)"
+          title="حالت ادیت جی‌کد — ویرایشِ کپیِ افست‌شدهٔ پروفایل (۱:۱ با خودِ پروفایل): هر تغییر بلافاصله روی پروفایل و فایل جی‌کد اعمال می‌شود. درگِ خط‌چینِ راهنما = تنظیم فاصلهٔ آفست."
           className={cn(
             "chip-toggle border-edge bg-panel/85 backdrop-blur-sm transition-all hover:border-edge2",
             settings.editMode ? "!border-teal/70 text-teal shadow-[0_0_10px_rgba(69,179,148,0.35)]" : "text-ink"
@@ -2354,32 +2410,10 @@ export default function ProfileEditor({
         <LayerMenu settings={settings} onSettings={onSettings} />
       </div>
 
-      {/* نوار ابزارِ ویرایش جی‌کد — انتخاب تک‌خط/تک‌نقطه، حذف، واگرد ویرایش‌ها */}
+      {/* راهنمایِ حالت ادیت جی‌کد */}
       {settings.editMode && (
-        <div className="anim-in absolute top-2.5 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-lg border border-edge bg-panel/90 px-2 py-1 text-[10.5px] shadow-lg backdrop-blur-sm">
-          <span className="font-bold text-ink">ویرایش جی‌کد</span>
-          {(gsel.lns.length > 0 || gsel.pts.length > 0) && (
-            <>
-              <span className="text-mute">
-                {gsel.lns.length ? `${gsel.lns.length} خط` : ""}
-                {gsel.lns.length && gsel.pts.length ? " + " : ""}
-                {gsel.pts.length ? `${gsel.pts.length} نقطه` : ""}
-              </span>
-              <button onClick={deleteGcodeSelection} className="rounded bg-danger/15 px-1.5 py-0.5 font-bold text-danger transition-colors hover:bg-danger/25" title="حذف انتخاب (کلید Delete)">حذف</button>
-            </>
-          )}
-          <span className="h-3.5 w-px bg-edge" />
-          <button onClick={onGcUndo} disabled={!gcCanUndo} title="واگرد آخرین ویرایش جی‌کد" className="rounded p-1 text-mute transition-colors enabled:hover:bg-elev enabled:hover:text-ink disabled:opacity-35">
-            <IconUndo className="h-3 w-3" />
-          </button>
-          <button onClick={onGcRedo} disabled={!gcCanRedo} title="بازانجام ویرایش جی‌کد" className="rounded p-1 text-mute transition-colors enabled:hover:bg-elev enabled:hover:text-ink disabled:opacity-35">
-            <IconRedo className="h-3 w-3" />
-          </button>
-          {gcEditsCount > 0 ? (
-            <button onClick={onGcClearAll} className="rounded-full border border-cyan/45 bg-cyan/10 px-1.5 py-0.5 font-mono text-[9.5px] text-cyan transition-colors hover:bg-cyan/20" title="بازگردانی کامل فایل به حالت بدون‌ویرایش">{gcEditsCount} ویرایش ⟲</button>
-          ) : (
-            <span className="text-dim">یک خط یا نقطهٔ مسیر را بگیرید</span>
-          )}
+        <div className="anim-in pointer-events-none absolute top-2.5 left-1/2 z-10 -translate-x-1/2 rounded-full border border-teal/35 bg-panel/85 px-3 py-1 text-[10.5px] font-bold text-teal shadow-lg backdrop-blur-sm">
+          حالت ادیت جی‌کد — کپیِ افست را بکشید؛ تغییر روی پروفایل و فایل همزمان اعمال می‌شود
         </div>
       )}
 
