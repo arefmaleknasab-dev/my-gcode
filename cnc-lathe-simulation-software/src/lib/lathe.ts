@@ -2,8 +2,6 @@
 /*  خراط‌کد — موتور هندسه، مسیر ابزار و جی‌کد برای خراطی دومحور (X/Z)   */
 /* ------------------------------------------------------------------ */
 
-import type { SketchSeg } from "./sketch";
-
 export interface PPoint {
   id: number;
   z: number; // موقعیت طولی (mm)
@@ -569,7 +567,6 @@ export interface Seg {
   note?: string[]; // کامنت‌های قبل از این حرکت (فقط فرمت استاندارد)
   fan?: number; // گسترش G0 این حرکت در جی‌کد (+قطر، فقط حرکت سریع طولی در/بالای رترکت؛ پیش‌فرض ۰)
   fanU?: number; // گسترش G0 در راستای محور (+طول، فقط بیرون قطعه یا رانش داخل‌خط تراورس؛ پیش‌فرض ۰)
-  ovrKey?: string; // کلید پایدار خط برای «ادیت جی‌کد» (عملیات:شماره‌خط در عملیات)
 }
 
 export interface GenResult {
@@ -1469,17 +1466,6 @@ export function generate(pts: PPoint[], p: Params, innerPts?: PPoint[]): GenResu
     });
   }
 
-  /* کلید پایدار هر خط (برای ادیت جی‌کد): عملیات:شماره در آن عملیات */
-  {
-    const ctr = new Map<string, number>();
-    for (const sg of segs) {
-      const kk = sg.opId < 0 ? "sys" : String(sg.opId);
-      const n = ctr.get(kk) ?? 0;
-      ctr.set(kk, n + 1);
-      sg.ovrKey = `${kk}:${n}`;
-    }
-  }
-
   /* قالب‌بندی خروجی بر اساس سبک انتخابی */
   const lines = p.format === "modal" ? buildModalLines(segs, p) : buildStdLines(segs, p);
 
@@ -1989,152 +1975,4 @@ export function fmtTime(sec: number): string {
   const s = Math.round(sec % 60);
   if (m >= 60) return `${Math.floor(m / 60)}س ${m % 60}د`;
   return m > 0 ? `${m}د و ${s}ث` : `${s} ثانیه`;
-}
-
-/* ================= ویرایشِ خطوط جی‌کد (حالت ادیت جی‌کد) =================
-   هر خطِ خروجی کلیدِ ovrKey دارد؛ ویرایش‌ها به‌صورتِ مطلق (مختصات کارِ
-   z/r با X قطری) روی همان کلید ذخیره و برنامه از نو ساخته می‌شود:
-   - خطِ حذف‌شده (del) از برنامه بیرون می‌رود؛
-   - اگر بعدِ ویرایش، سرِ یک حرکت بُرش از انتهای حرکت قبلی باز باشد،
-     یک حرکتِ اتصالِ سریع (G0) خودکار تزریق می‌شود (اتصال ناقص نمی‌ماند)؛
-   - حرکات صفرطول (نقاطِ هم‌مکان) حذف می‌شوند (خط/نقطهٔ اضافی نمی‌ماند). */
-
-export interface GcodeOvrPt {
-  z: number;
-  x: number;
-}
-export interface GcodeOvr {
-  s?: GcodeOvrPt;
-  e?: GcodeOvrPt;
-  del?: boolean;
-}
-export type GcodeOvrMap = Record<string, GcodeOvr>;
-
-export function applyGcodeOvr(base: GenResult, ovr: GcodeOvrMap, p: Params): GenResult {
-  if (!Object.keys(ovr).length) return base;
-  const kept: Seg[] = [];
-  for (const sg0 of base.segs) {
-    const o = sg0.ovrKey ? ovr[sg0.ovrKey] : undefined;
-    if (o?.del) continue;
-    const sg = { ...sg0 };
-    if (o && (o.s || o.e)) {
-      if (o.s) {
-        sg.z1 = o.s.z;
-        sg.x1 = o.s.x;
-      }
-      if (o.e) {
-        sg.z2 = o.e.z;
-        sg.x2 = o.e.x;
-      }
-    }
-    if (Math.abs(sg.z2 - sg.z1) < 1e-6 && Math.abs(sg.x2 - sg.x1) < 1e-6) continue; // صفرطول
-    const prev = kept[kept.length - 1];
-    if (prev && sg.motion === 1 && (Math.abs(sg.z1 - prev.z2) > 1e-6 || Math.abs(sg.x1 - prev.x2) > 1e-6)) {
-      if (prev.motion === 0) {
-        /* حرکتِ سریعِ پیشین خودش جابه‌جا می‌شود تا سرِ بُرش را بگیرد (بی‌درز) */
-        prev.z2 = sg.z1;
-        prev.x2 = sg.x1;
-        if (Math.abs(prev.z2 - prev.z1) < 1e-6 && Math.abs(prev.x2 - prev.x1) < 1e-6) kept.pop();
-      } else {
-        /* اتصالِ ناقص: حرکتِ سریعِ لازم قبل از بُرش تزریق می‌شود */
-        kept.push({ ...sg, motion: 0, feed: RAPID_RATE, kind: "rapid", opId: -1, op: "sys", note: undefined, fan: undefined, fanU: undefined, z1: prev.z2, x1: prev.x2, z2: sg.z1, x2: sg.x1, line: -1, holder: sg.holder, ovrKey: undefined });
-      }
-    }
-    kept.push(sg);
-  }
-  const lines = p.format === "modal" ? buildModalLines(kept, p) : buildStdLines(kept, p);
-  let cutLen = 0;
-  let rapidLen = 0;
-  let timeSec = 0;
-  for (const s of kept) {
-    const d = Math.hypot(s.x2 - s.x1, s.z2 - s.z1);
-    if (s.motion === 1) {
-      cutLen += d;
-      timeSec += (d / Math.max(1, s.feed)) * 60;
-    } else {
-      rapidLen += d;
-      timeSec += (d / RAPID_RATE) * 60;
-    }
-  }
-  return { ...base, segs: kept, lines, cutLen, rapidLen, timeSec };
-}
-
-/* ---------- بافرِ «ادیت جی‌کد» (ویرایش خطی مستقل روی برنامه) ---------- */
-
-/* یک خطِ برنامه: حرکتِ خطی G0/G1 با مبدأ/مقصدِ قابل‌کشیدن (X قطری، mm) */
-export interface EditLine {
-  id: number; // شناسهٔ یکتا در بافر (برای انتخاب)
-  key: string; // ovrKeyِ خطِ پایه (پل‌های تزریق‌شده کلید واقعی ندارند)
-  z1: number;
-  x1: number;
-  z2: number;
-  x2: number;
-  motion: 0 | 1;
-  feed: number;
-  opId: number; // -۱ = سیستمی (نزدیک‌سازی/امنیت)
-  kind: SegKind;
-  holder: 1 | 2;
-  note?: string[];
-  fan?: number;
-  fanU?: number;
-}
-
-/* patch روی منحنیِ افست — مستقل از پروفایل اصلی؛ مختصات در فضای پروفایل */
-export interface OffPatch {
-  a?: { z: number; r: number };
-  b?: { z: number; r: number };
-  c1?: { z: number; r: number };
-  c2?: { z: number; r: number };
-  via?: { z: number; r: number };
-  del?: boolean;
-}
-
-export interface EditBuf {
-  lines: EditLine[]; // خطوط برنامه (حذف با فیلتر شدن — بی‌درز)
-  sketch: SketchSeg[]; // کپیِ کاریِ پروفایل (تأیید = انتقال به اسکچ اصلی)
-  off: Record<number, OffPatch>; // ویرایش مستقل منحنی‌های افست (کلید = id قطعهٔ پروفایل)
-  reseed?: boolean; // پس از تأیید: بافر با برنامهٔ تازه پایه‌ریزی شود
-}
-
-export function seedGcodeEdit(segs: Seg[]): EditLine[] {
-  return segs.map((sg, i) => ({
-    id: i + 1,
-    key: sg.ovrKey ?? `#bridge:${i}`,
-    z1: sg.z1,
-    x1: sg.x1,
-    z2: sg.z2,
-    x2: sg.x2,
-    motion: sg.motion,
-    feed: sg.feed,
-    opId: sg.opId,
-    kind: sg.kind,
-    holder: sg.holder,
-    note: sg.note,
-    fan: sg.fan,
-    fanU: sg.fanU,
-  }));
-}
-
-/* patches مطلق روی برنامهٔ پایه + حذف‌ها؛ کلیدهای پل (شروع #) نادیده (مجدداً تزریق می‌شوند) */
-export function deriveGcodeOvr(lines: EditLine[], baseSegs: Seg[], prev: GcodeOvrMap): GcodeOvrMap {
-  const next: GcodeOvrMap = { ...prev };
-  const byKey = new Map<string, Seg>();
-  for (const sg of baseSegs) if (sg.ovrKey) byKey.set(sg.ovrKey, sg);
-  const live = new Set<string>();
-  for (const L of lines) {
-    if (L.key.startsWith("#")) continue;
-    live.add(L.key);
-    const b = byKey.get(L.key);
-    if (!b) continue;
-    const o: GcodeOvr = {};
-    if (Math.abs(b.z1 - L.z1) > 1e-9 || Math.abs(b.x1 - L.x1) > 1e-9) o.s = { z: L.z1, x: L.x1 };
-    if (Math.abs(b.z2 - L.z2) > 1e-9 || Math.abs(b.x2 - L.x2) > 1e-9) o.e = { z: L.z2, x: L.x2 };
-    if (o.s || o.e) next[L.key] = o;
-    else if (!prev[L.key]) delete next[L.key];
-  }
-  for (const sg of baseSegs) {
-    const k = sg.ovrKey;
-    if (k && !live.has(k)) next[k] = { ...next[k], del: true };
-  }
-  return next;
 }

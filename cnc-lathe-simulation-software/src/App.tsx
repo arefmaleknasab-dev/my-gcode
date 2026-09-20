@@ -7,8 +7,8 @@ import ProfileEditor, { type EdSettings } from "./components/ProfileEditor";
 import SimulationView from "./components/SimulationView";
 import { IconCheck, IconCode, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
 import { buildDxf } from "./lib/dxf";
-import { PRESETS, STRATEGIES, applyGcodeOvr, deriveGcodeOvr, generate, makeOps, normalizeParams, presetPoints, seedGcodeEdit } from "./lib/lathe";
-import type { EditBuf, GcodeOvrMap, Params, PPoint, Preset } from "./lib/lathe";
+import { PRESETS, STRATEGIES, generate, makeOps, normalizeParams, presetPoints } from "./lib/lathe";
+import type { Params, PPoint, Preset } from "./lib/lathe";
 import type { SketchSeg } from "./lib/sketch";
 import { autoSplitPoint, branchPoints, chainPolyline, flattenSketch, normalizeSketch, orderChain, sketchFromPoints, sketchFromWall, splitChainAt } from "./lib/sketch";
 import { cn } from "./utils/cn";
@@ -22,11 +22,10 @@ interface Saved {
   settings?: Partial<EdSettings>;
   layout?: LayoutState;
   activePreset?: string | null;
-  gcodeOvr?: Record<string, { s?: { z: number; x: number }; e?: { z: number; x: number }; del?: boolean }>;
   version?: number;
 }
 
-const SAVE_VERSION = 6;
+const SAVE_VERSION = 5;
 
 let SAVED: Saved | null = null;
 try {
@@ -38,35 +37,6 @@ try {
 
 /* داده‌های پیش از نسخه ۲: عملیات «spring» و «offset» معنای متفاوتی داشتند */
 const IS_LEGACY = !SAVED || !SAVED.version || SAVED.version < 3;
-
-/* گام تاریخچه — یکپارچه: اسکچ + اوررایدهای تأییدشدهٔ جی‌کد + وضعیت/بافرِ حالت ادیت */
-interface HistEntry {
-  sketch: SketchSeg[];
-  gcodeOvr: GcodeOvrMap;
-  editBuf: EditBuf | null;
-}
-
-/* بازخوانی ایمنِ اوررایدها از حافظهٔ محلی (سنجش نوع پس از پارس) */
-function normGcodeOvr(raw: Saved["gcodeOvr"]): GcodeOvrMap {
-  const out: GcodeOvrMap = {};
-  if (!raw || typeof raw !== "object") return out;
-  for (const [k, v] of Object.entries(raw)) {
-    if (!v || typeof v !== "object") continue;
-    const o: { s?: { z: number; x: number }; e?: { z: number; x: number }; del?: boolean } = {};
-    const okPt = (q: unknown): q is { z: number; x: number } =>
-      !!q &&
-      typeof q === "object" &&
-      typeof (q as { z: unknown }).z === "number" &&
-      typeof (q as { x: unknown }).x === "number" &&
-      isFinite((q as { z: number }).z) &&
-      isFinite((q as { x: number }).x);
-    if (okPt(v.s)) o.s = { z: v.s!.z, x: v.s!.x };
-    if (okPt(v.e)) o.e = { z: v.e!.z, x: v.e!.x };
-    if (v.del === true) o.del = true;
-    if (o.s || o.e || o.del) out[k] = o;
-  }
-  return out;
-}
 
 export default function App() {
   const [sketch, setSketch] = useState<SketchSeg[]>(() => {
@@ -101,26 +71,9 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "warn" } | null>(null);
   const [, setHistVer] = useState(0);
 
-  /* حالت ادیت جی‌کد: فایل = برنامهٔ پایه + اوررایدِ تأییدشده (پیش از «تأیید» فایل دست‌نخورده است) */
-  const [gcodeOvr, setGcodeOvr] = useState<GcodeOvrMap>(() => normGcodeOvr(SAVED?.gcodeOvr));
-  const [editBuf, setEditBuf] = useState<EditBuf | null>(null);
-  const editBufRef = useRef<EditBuf | null>(editBuf);
-  editBufRef.current = editBuf;
-
-  const past = useRef<HistEntry[]>([]);
-  const future = useRef<HistEntry[]>([]);
+  const past = useRef<SketchSeg[][]>([]);
+  const future = useRef<SketchSeg[][]>([]);
   const toastTimer = useRef<number | null>(null);
-  const stateRef = useRef({ sketch, gcodeOvr, editBuf });
-  stateRef.current = { sketch, gcodeOvr, editBuf };
-
-  /* تاریخچهٔ یکپارچه: هر گام = {اسکچ، اورراید جی‌کد، بافر ادیت} — واگرد بعد از تأیید
-     دقیقاً به همان حالت ادیت و آخرین تغییر بازمی‌گردد (خواستهٔ کاربر) */
-  const snap = (): HistEntry => ({ ...stateRef.current });
-  const pushPast = (e: HistEntry) => {
-    past.current.push(e);
-    future.current = [];
-    if (past.current.length > 80) past.current.shift();
-  };
 
   /* پروفایل نقطه‌ای برای موتور تراش — حالت عادی تخت، حالت کاسه دوشاخه (Split) */
   const { points, innerPoints, splitInfo } = useMemo(() => {
@@ -140,18 +93,16 @@ export default function App() {
     return { points: flattenSketch(sketch, blankR, params.blankL), innerPoints: [] as PPoint[], splitInfo: none };
   }, [sketch, params.split, params.blankD, params.blankL]);
 
-  const genBase = useMemo(() => generate(points, params, innerPoints), [points, params, innerPoints]);
-
-  const gen = useMemo(() => applyGcodeOvr(genBase, gcodeOvr, params), [genBase, gcodeOvr, params]);
+  const gen = useMemo(() => generate(points, params, innerPoints), [points, params, innerPoints]);
 
   /* ذخیره محلی */
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, layout, gcodeOvr, version: SAVE_VERSION }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, layout, version: SAVE_VERSION }));
     } catch {
       /* ignore */
     }
-  }, [sketch, params, settings, activePreset, layout, gcodeOvr]);
+  }, [sketch, params, settings, activePreset, layout]);
 
   /* هنگام تغییر برنامه، هایلایت جی‌کد پاک شود */
   useEffect(() => {
@@ -164,74 +115,18 @@ export default function App() {
   }, [params.ops, isolatedOpId]);
 
   /* واگرد / بازانجام روی اسکچ */
-  const commitRef = useRef<HistEntry | null>(null);
-  const restore = (e: HistEntry) => {
-    setSketch(e.sketch);
-    setGcodeOvr(e.gcodeOvr);
-    setEditBuf(e.editBuf);
-    setHistVer((v) => v + 1);
-  };
+  const commitRef = useRef<SketchSeg[] | null>(null);
   const undo = () => {
     if (past.current.length === 0) return;
-    future.current.push(snap());
+    future.current.push(sketch);
     commitRef.current = null;
-    restore(past.current.pop()!);
+    setSketch(past.current.pop()!);
+    setHistVer((v) => v + 1);
   };
   const redo = () => {
     if (future.current.length === 0) return;
-    past.current.push(snap());
-    commitRef.current = null;
-    restore(future.current.pop()!);
-  };
-
-  /* ---------- حالت ادیت جی‌کد ---------- */
-  const openEdit = () => {
-    if (editBufRef.current) return;
-    pushPast(snap());
-    setEditBuf({ lines: seedGcodeEdit(gen.segs), sketch, off: {} });
-    setHistVer((v) => v + 1);
-  };
-  const closeEdit = () => {
-    if (!editBufRef.current) return;
-    pushPast(snap());
-    setEditBuf(null);
-    setHistVer((v) => v + 1);
-    showToast("حالت ادیت جی‌کد بسته شد — فایل، آخرین وضعیتِ تأییدشده است", "warn");
-  };
-  const confirmEdit = () => {
-    const eb = editBufRef.current;
-    if (!eb) return;
-    const next = deriveGcodeOvr(eb.lines, gen.segs, gcodeOvr);
-    const sketchChanged = eb.sketch !== sketch;
-    if (!sketchChanged && JSON.stringify(next) === JSON.stringify(gcodeOvr)) {
-      showToast("تغییری برای ثبت نیست", "warn");
-      return;
-    }
-    pushPast(snap());
-    setGcodeOvr(next);
-    if (sketchChanged) {
-      setActivePreset(null);
-      setSketch(eb.sketch);
-    }
-    setHistVer((v) => v + 1);
-    showToast("جی‌کد به‌روز شد ✓ (حالت ادیت باز ماند)");
-  };
-  /* پس از تأیید، بافر روی برنامهٔ تازه پایه‌ریزی می‌شود تا ویرایش‌های بعدی روی همان فایل بنشینند */
-  useEffect(() => {
-    setEditBuf((b) => (b && b.reseed ? { lines: seedGcodeEdit(gen.segs), sketch: b.sketch, off: b.off } : b));
-  }, [gen]);
-
-  /* تغییرات بافر (خطوط/پروفایل/افست) — یک‌گام تاریخچه برای هر ژست */
-  const onEditBuf = (next: EditBuf | null, commit: boolean) => {
-    if (!commit) {
-      if (!commitRef.current) commitRef.current = snap();
-      setEditBuf(next);
-      return;
-    }
-    const pend = commitRef.current ?? snap();
-    commitRef.current = null;
-    pushPast(pend);
-    setEditBuf(next);
+    past.current.push(sketch);
+    setSketch(future.current.pop()!);
     setHistVer((v) => v + 1);
   };
 
@@ -275,23 +170,18 @@ export default function App() {
 
   /* تغییر اسکچ — با commit=false تغییر زنده (کشیدن) و با true ثبت در تاریخچه */
   const onSketchChange = useCallback((next: SketchSeg[], commit: boolean) => {
-    /* در حالت ادیت، ویرایش پروفایل روی کپیِ کاریِ بافر می‌نشیند (فایل تا «تأیید» عوض نمی‌شود) */
-    if (editBufRef.current) {
-      if (!commit && !commitRef.current) commitRef.current = snap();
-      onEditBuf({ ...editBufRef.current, sketch: next }, commit);
-      return;
-    }
     if (commit) {
-      pushPast(commitRef.current ?? { sketch, gcodeOvr, editBuf: null });
+      past.current.push(commitRef.current ?? sketch);
       commitRef.current = null;
+      future.current = [];
+      if (past.current.length > 80) past.current.shift();
       setActivePreset(null);
     } else if (!commitRef.current) {
-      commitRef.current = { sketch, gcodeOvr, editBuf: null }; // وضعیت پیش از شروع کشیدن
+      commitRef.current = sketch; // وضعیت پیش از شروع کشیدن
     }
     setSketch(next);
     setHistVer((v) => v + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sketch, gcodeOvr]);
+  }, [sketch]);
 
   const applyPreset = useCallback((p: Preset) => {
     if (p.wall) {
@@ -497,28 +387,8 @@ export default function App() {
           >
             {mode === "design" ? (
             <ProfileEditor
-              segs={editBuf ? editBuf.sketch : sketch}
+              segs={sketch}
               onSegs={onSketchChange}
-              edit={editBuf}
-              editChanges={(() => {
-                if (!editBuf) return 0;
-                let n = 0;
-                const byKey = new Map(gen.segs.map((sg) => [sg.ovrKey ?? "", sg]));
-                const live = new Set(editBuf.lines.map((l) => l.key));
-                for (const l of editBuf.lines) {
-                  const b = l.key.startsWith("#") ? undefined : byKey.get(l.key);
-                  if (!b) continue;
-                  if (Math.abs(b.z1 - l.z1) > 1e-6 || Math.abs(b.x1 - l.x1) > 1e-6 || Math.abs(b.z2 - l.z2) > 1e-6 || Math.abs(b.x2 - l.x2) > 1e-6) n++;
-                }
-                for (const sg of gen.segs) if (sg.ovrKey && !live.has(sg.ovrKey)) n++;
-                if (editBuf.sketch !== sketch) n++;
-                n += Object.keys(editBuf.off).length;
-                return n;
-              })()}
-              onEditToggle={(open) => (open ? openEdit() : closeEdit())}
-              onEditBuf={onEditBuf}
-              onEditConfirm={confirmEdit}
-              onEditCancel={closeEdit}
               selected={selectedIds}
               onSelected={setSelectedIds}
               params={params}
