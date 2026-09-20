@@ -2101,7 +2101,6 @@ export interface EditBuf {
   lines: ELine[]; // به همان ترتیب اجرای برنامه؛ همواره vb==vaِ خطِ بعد (زنجیرهٔ بسته)
   sketch: SketchSeg[]; // کپیِ کاریِ پروفایل (تأیید = انتقال به اسکچ اصلی)
   off: Record<number, OffPatch>; // ویرایش مستقل منحنی‌های افست (کلید = id قطعهٔ پروفایل)
-  offV?: Record<string, { z: number; r: number }>; // رأس‌های مشترکِ لایهٔ افست (کلید = «z,r» رأسِ مبنا)
 }
 
 export type ELineXY = ELine & { z1: number; x1: number; z2: number; x2: number };
@@ -2174,24 +2173,6 @@ export function normalizeEditBuf(verts: EVert[], lines: ELine[]): { verts: EVert
       continue;
     }
     out.push(l);
-  }
-  /* پیوستگیِ زنجیره: هر فاصله‌ای که (مثلاً با حذف یک خط) می‌ماند، با یک خطِ اتصالِ
-     سریعِ «دیده‌شونده» پر می‌شود — همان چیزی که در فایل هم ساخته می‌شود (باگ ۵).
-     رأسِ تازه‌ای ساخته نمی‌شود؛ دو سرِ مشترکِ همین حالا وجود دارند. */
-  if (out.length > 1) {
-    const chained: ELine[] = [out[0]];
-    let gid = 0;
-    let nid = out.reduce((m, l) => Math.max(m, l.id), 0) + 1;
-    for (let i = 1; i < out.length; i++) {
-      const prev = chained[chained.length - 1];
-      const l = out[i];
-      if (prev.vb !== l.va) {
-        chained.push({ id: nid++, key: `#gap:${gid++}`, va: prev.vb, vb: l.va, motion: 0, feed: RAPID_RATE, opId: -1, kind: "rapid", holder: prev.holder });
-      }
-      chained.push(l);
-    }
-    out.length = 0;
-    out.push(...chained);
   }
   const used = new Set<number>();
   for (const l of out) {

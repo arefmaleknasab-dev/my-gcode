@@ -289,7 +289,6 @@ export default function ProfileEditor({
   const [selV, setSelV] = useState<number[]>([]); // رأس‌های انتخابی (نقاط مشترک)
   const [selOff, setSelOff] = useState<number[]>([]); // منحنی‌های افست انتخابی
   const [hoverBuf, setHoverBuf] = useState<number | null>(null);
-  const [hoverVx, setHoverVx] = useState<number | null>(null);
   const [bufMarq, setBufMarq] = useState<{ ids: number[]; vxs: number[] } | null>(null);
   useEffect(() => {
     if (editOpen) return;
@@ -297,7 +296,6 @@ export default function ProfileEditor({
     setSelV([]);
     setSelOff([]);
     setHoverBuf(null);
-    setHoverVx(null);
     setBufMarq(null);
   }, [editOpen]);
   /* نقاط جداشده (unjoined) — به‌صورت پیش‌فرض همهٔ نقاطِ هم‌مکان متصل‌اند */
@@ -1050,38 +1048,54 @@ export default function ProfileEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edit, cam, settings, editOpen]);
 
-  /* برخورد با خطوط برنامه (پیکسلی) — با فاصلهٔ بر خورد، برای اولویت‌بندیِ منصفانه */
-  const hitBufLineD = (px: number, py: number): { id: number; d: number } | null => {
+  /* برخورد با خطوط برنامه (پیکسلی)؛ اولویت با خط انتخاب‌شده */
+  const hitBufLine = (px: number, py: number): number | null => {
     const c = camRef.current;
     if (!c || !editOpen) return null;
-    let best: { id: number; d: number } | null = null;
+    let best: number | null = null;
+    let bestD = 0;
     for (const l of edit!.lines) {
       if (!bufVisible(l)) continue;
       const [x1, y1, x2, y2] = bufPx(c, l);
       const len2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) || 1;
       const t = Math.min(1, Math.max(0, ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / len2));
       const d = Math.hypot(px - (x1 + (x2 - x1) * t), py - (y1 + (y2 - y1) * t));
-      const tol = selL.includes(l.id) ? 5.5 : 3.6;
-      if (d < tol && (!best || d < best.d)) best = { id: l.id, d };
+      const tol = selL.includes(l.id) ? 5.5 : 3.4;
+      if (d < tol && (best == null || d < bestD)) {
+        best = l.id;
+        bestD = d;
+      }
     }
     return best;
   };
 
-  /* همهٔ رأس‌ها همیشه «قابل گرفتن» و روی هاور قابل‌دیدن‌اند (باگ ۲):
-     تا پیش از کلیک، شکل نقطه زیر نشانگر نمایان می‌شود. */
-  const hitBufVxD = (px: number, py: number): { vid: number; d: number } | null => {
+  /* رأس‌ها فقط برای خطوط انتخاب‌شده قابل‌گرفتن‌اند (بدون نقطه روی خطوطِ انتخاب‌نشده) */
+  const hitBufVx = (px: number, py: number): number | null => {
     const c = camRef.current;
     if (!c || !editOpen || !lines.length) return null;
-    let best: { vid: number; d: number } | null = null;
-    for (const v of verts) {
+    const vids = new Set<number>();
+    for (const id of selL) {
+      const l = lineById.get(id);
+      if (l) {
+        vids.add(l.va);
+        vids.add(l.vb);
+      }
+    }
+    let best: number | null = null;
+    let bestD = 8.5;
+    for (const vid of vids) {
+      const v = vz(vid);
       const [x, y] = screenPt(c, v.z, v.x / 2);
       const d = Math.hypot(px - x, py - y);
-      if (d <= 6 && (!best || d < best.d)) best = { vid: v.id, d };
+      if (d < bestD) {
+        bestD = d;
+        best = vid;
+      }
     }
     return best;
   };
 
-  /* گامِ حرکت: فقط «میزان»ِ جابه‌جایی از شبکه (آهنربا) گرفته می‌شود — قفل روی خطوط شبکه نیست (باگ ۳) */
+  /* گامِ حرکت: فقط «میزانِ» جابه‌جایی از شبکه (چیپِ آهنربا) گرفته می‌شود — قفل روی خطوط شبکه نیست */
   const quantStep = (raw: SPoint, start: SPoint): { z: number; r: number } => {
     const dz = raw.z - start.z;
     const dr = raw.r - start.r;
@@ -1090,87 +1104,37 @@ export default function ProfileEditor({
     return { z: Math.round(dz / g) * g, r: Math.round(dr / g) * g };
   };
 
-  /* ---------- لایهٔ افست: یک منحنیِ پیوسته برای هر زنجیره (۱:۱ با پروفایل) ----------
-     مفاصل با میتِر بسته می‌شوند؛ رأس‌های مشترک با هم جابه‌جا می‌شوند؛
-     ویرایشش مستقل از پروفایل و ماندگار است (باگ ۴). */
-  type OffSeg = { id: number; seg: SketchSeg; ka: string; kb: string };
-  const offSegs = useMemo<OffSeg[]>(() => {
-    if (!edit) return [];
+  /* ---------- لایهٔ افست: به ازای هر قطعهٔ پروفایل یک منحنی (۱:۱)، مستقل ویرایش می‌شود ---------- */
+  const chordN = (sg: SketchSeg): { nz: number; nr: number } => {
+    const dz = sg.b.z - sg.a.z;
+    const dr = sg.b.r - sg.a.r;
+    const len = Math.hypot(dz, dr) || 1;
+    return { nz: -dr / len, nr: dz / len };
+  };
+  const offSegs = useMemo(() => {
+    if (!edit) return [] as SketchSeg[];
     const D = params.offsetDist;
-    const sideOf = (sg: SketchSeg) => (segSide.get(sg.id) === "inner" ? -1 : 1);
-    const nrm = (sg: SketchSeg) => {
-      const dz = sg.b.z - sg.a.z;
-      const dr = sg.b.r - sg.a.r;
-      const len = Math.hypot(dz, dr) || 1;
-      return { nz: -dr / len, nr: dz / len };
-    };
-    const keyOf = (p: SPoint, side: number) => `${p.z.toFixed(4)},${p.r.toFixed(4)}|${side}`;
-    const acc = new Map<string, { nz: number; nr: number }[]>();
-    const chain: SketchSeg[] = orderChain(edit.sketch).map((ci) =>
-      ci.reversed ? ({ ...ci.seg, a: ci.seg.b, b: ci.seg.a, c1: ci.seg.c2, c2: ci.seg.c1 } as SketchSeg) : ci.seg
-    );
-    for (const sg of chain) {
-      if (edit.off[sg.id]?.del) continue;
-      const n = nrm(sg);
-      const side = sideOf(sg);
-      for (const q of [sg.a, sg.b]) {
-        const k = keyOf(q, side);
-        const vn = { nz: n.nz * side, nr: n.nr * side };
-        const arr = acc.get(k);
-        if (arr) {
-          if (!arr.some((z) => Math.abs(z.nz - vn.nz) < 1e-9 && Math.abs(z.nr - vn.nr) < 1e-9)) arr.push(vn);
-        } else acc.set(k, [vn]);
-      }
-    }
-    const shift = new Map<string, { nz: number; nr: number }>();
-    for (const [k, arr] of acc) {
-      if (arr.length === 1) {
-        shift.set(k, { nz: arr[0].nz * D, nr: arr[0].nr * D });
-      } else {
-        const dot = 1 + (arr[0].nz * arr[1].nz + arr[0].nr * arr[1].nr);
-        const m = Math.max(0.35, dot);
-        shift.set(k, { nz: ((arr[0].nz + arr[1].nz) * D) / m, nr: ((arr[0].nr + arr[1].nr) * D) / m });
-      }
-    }
-    const vxm = edit.offV ?? {};
-    const out: OffSeg[] = [];
-    for (const sg of chain) {
-      const el = edit.off[sg.id];
-      if (el?.del) continue;
-      const side = sideOf(sg);
-      const ka = keyOf(sg.a, side);
-      const kb = keyOf(sg.b, side);
-      const dp = (q: SPoint, k: string): SPoint => {
-        const ov = vxm[k];
-        if (ov) return ov;
-        const t = shift.get(k);
-        return t ? { z: q.z + t.nz, r: q.r + t.nr } : { ...q };
-      };
-      const dc = (q: SPoint | undefined, k: string): SPoint | undefined => (q ? dp(q, k) : undefined);
-      let t: SketchSeg = { ...sg, a: dp(sg.a, ka), b: dp(sg.b, kb) };
-      const c1 = el?.c1 ?? dc(sg.c1, ka);
-      if (c1) t = { ...t, c1 };
-      const c2 = el?.c2 ?? dc(sg.c2, kb);
-      if (c2) t = { ...t, c2 };
-      const via = el?.via ?? dc(sg.via, ka) ?? dc(sg.via, kb);
-      if (via) t = { ...t, via };
-      out.push({ id: sg.id, seg: t, ka, kb });
+    const out: SketchSeg[] = [];
+    for (const sg of edit.sketch) {
+      const pt = edit.off[sg.id];
+      if (pt?.del) continue;
+      const side = segSide.get(sg.id) === "inner" ? -1 : 1;
+      const n = chordN(sg);
+      const sh = (q?: SPoint): SPoint | undefined => (q ? { z: q.z + n.nz * D * side, r: q.r + n.nr * D * side } : q);
+      let t: SketchSeg = { ...sg, a: sh(sg.a)!, b: sh(sg.b)! };
+      if (sg.c1) t = { ...t, c1: sh(sg.c1)! };
+      if (sg.c2) t = { ...t, c2: sh(sg.c2)! };
+      if (sg.via) t = { ...t, via: sh(sg.via)! };
+      if (pt) t = { ...t, ...pt } as SketchSeg;
+      out.push(t);
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edit, params.offsetDist]);
-  const offVerts = useMemo(() => {
-    const m = new Map<string, SPoint>();
-    for (const o of offSegs) {
-      m.set(o.ka, o.seg.a);
-      m.set(o.kb, o.seg.b);
-    }
-    return m;
-  }, [offSegs]);
   const pxDistOff = (o: SketchSeg, px: number, py: number): number => {
     const c = camRef.current;
     if (!c) return Infinity;
-    const poly = o.kind === "line" ? [o.a, o.b] : segPoints(o, 12);
+    const poly = o.kind === "line" ? [o.a, o.b] : segPoints(o, 24);
     let best = Infinity;
     for (let i = 0; i < poly.length - 1; i++) {
       const [x1, y1] = screenPt(c, poly[i].z, poly[i].r);
@@ -1181,44 +1145,43 @@ export default function ProfileEditor({
     }
     return best;
   };
-  const hitOffSegD = (px: number, py: number): { id: number; d: number } | null => {
+  const hitOffSeg = (px: number, py: number): number | null => {
     if (!camRef.current || !editOpen) return null;
-    let best: { id: number; d: number } | null = null;
+    let best: number | null = null;
+    let bestD = 3;
     for (const o of offSegs) {
-      const d = pxDistOff(o.seg, px, py);
-      if (d < 3 && (!best || d < best.d)) best = { id: o.id, d };
+      const d = pxDistOff(o, px, py);
+      if (d < bestD) {
+        bestD = d;
+        best = o.id;
+      }
     }
     return best;
   };
-  type OffHandleRef = { kind: "vx"; key: string; p: SPoint } | { kind: "ctrl"; id: number; part: "c1" | "c2" | "via"; p: SPoint };
+  type OffHandleRef = { id: number; part: "a" | "b" | "c1" | "c2" | "via" };
   const hitOffHandle = (px: number, py: number): OffHandleRef | null => {
     const c = camRef.current;
     if (!c || !editOpen) return null;
     let best: OffHandleRef | null = null;
-    let bestD = 4.5;
-    for (const [key, q] of offVerts) {
-      const [x, y] = screenPt(c, q.z, q.r);
-      const d = Math.hypot(px - x, py - y);
-      if (d < bestD) {
-        bestD = d;
-        best = { kind: "vx", key, p: q };
-      }
-    }
-    if (best) return best;
+    let bestD = 4.2;
     for (const o of offSegs) {
-      if (!selOff.includes(o.id)) continue;
-      const check = (part: "c1" | "c2" | "via", q?: SPoint) => {
+      const isSel = selOff.includes(o.id);
+      const check = (part: OffHandleRef["part"], q?: SPoint) => {
         if (!q) return;
         const [qx, qy] = screenPt(c, q.z, q.r);
         const d = Math.hypot(px - qx, py - qy);
         if (d < bestD) {
           bestD = d;
-          best = { kind: "ctrl", id: o.id, part, p: q };
+          best = { id: o.id, part };
         }
       };
-      check("c1", o.seg.c1);
-      check("c2", o.seg.c2);
-      check("via", o.seg.via);
+      check("a", o.a);
+      check("b", o.b);
+      if (isSel) {
+        check("via", o.via);
+        check("c1", o.c1);
+        check("c2", o.c2);
+      }
     }
     return best;
   };
@@ -1226,10 +1189,6 @@ export default function ProfileEditor({
     if (!edit) return;
     const cur = edit.off[id] ?? {};
     onEditBuf({ ...edit, off: { ...edit.off, [id]: { ...cur, ...patch } } }, commit);
-  };
-  const setOffV = (key: string, q: SPoint, commit: boolean) => {
-    if (!edit) return;
-    onEditBuf({ ...edit, offV: { ...(edit.offV ?? {}), [key]: q } }, commit);
   };
 
   /* باکسِ انتخاب: خطوط + رأس‌ها */
@@ -1263,9 +1222,8 @@ export default function ProfileEditor({
     | { mode: "rwait"; sx: number; sy: number; cam0: Cam; moved: boolean }
     | { mode: "eline"; ids: number[]; start: SPoint; base: Map<number, EVert>; sx: number; sy: number; moved: boolean }
     | { mode: "evert"; vid: number; start: SPoint; base: EVert; sx: number; sy: number; moved: boolean }
-    | { mode: "eoff"; id: number; start: SPoint; base: { ka: SPoint; kb: SPoint; c1?: SPoint; c2?: SPoint; via?: SPoint }; sx: number; sy: number; moved: boolean }
-    | { mode: "eoffv"; key: string; start: SPoint; base: SPoint; sx: number; sy: number; moved: boolean }
-    | { mode: "eoffh"; id: number; part: "c1" | "c2" | "via"; start: SPoint; base: SPoint; sx: number; sy: number; moved: boolean }
+    | { mode: "eoff"; id: number; last: SPoint; seed: SketchSeg; sx: number; sy: number; moved: boolean }
+    | { mode: "eoffh"; id: number; part: "a" | "b" | "c1" | "c2" | "via"; sx: number; sy: number; moved: boolean }
     | null
   >(null);
 
@@ -1313,31 +1271,35 @@ export default function ProfileEditor({
       return;
     }
 
-    /* --- حالت ادیت جی‌کد: رأس (نقطه) > بدنهٔ خط > افست — اولویت با نزدیک‌ترین فاصله --- */
+    /* --- حالت ادیت جی‌کد — رأسِ انتخابی، سرِ افست، منحنی افست، بدنهٔ خط --- */
     if (editOpen) {
       const ploc = toLocal(e.clientX, e.clientY);
-      const vd = hitBufVxD(ploc.x, ploc.y);
-      const ld = hitBufLineD(ploc.x, ploc.y);
-      if (vd && (!ld || vd.d <= Math.min(ld.d + 1.5, 6))) {
-        if (e.shiftKey) setSelV(selV.includes(vd.vid) ? selV.filter((x) => x !== vd.vid) : [...selV, vd.vid]);
-        else setSelV([vd.vid]);
-        drag.current = { mode: "evert", vid: vd.vid, start: raw, base: { ...vz(vd.vid) }, sx: ploc.x, sy: ploc.y, moved: false };
+      const bv = hitBufVx(ploc.x, ploc.y);
+      if (bv != null) {
+        if (e.shiftKey) setSelV(selV.includes(bv) ? selV.filter((x) => x !== bv) : [...selV, bv]);
+        else if (!selV.includes(bv)) setSelV([bv]);
+        drag.current = { mode: "evert", vid: bv, start: raw, base: { ...vz(bv) }, sx: ploc.x, sy: ploc.y, moved: false };
         return;
       }
       const oh = hitOffHandle(ploc.x, ploc.y);
       if (oh) {
-        if (oh.kind === "vx") {
-          drag.current = { mode: "eoffv", key: oh.key, start: raw, base: { ...oh.p }, sx: ploc.x, sy: ploc.y, moved: false };
-          return;
-        }
         if (!selOff.includes(oh.id)) setSelOff([...(e.shiftKey ? selOff : []), oh.id]);
-        drag.current = { mode: "eoffh", id: oh.id, part: oh.part, start: raw, base: { ...oh.p }, sx: ploc.x, sy: ploc.y, moved: false };
+        drag.current = { mode: "eoffh", id: oh.id, part: oh.part, sx: ploc.x, sy: ploc.y, moved: false };
         return;
       }
-      if (ld) {
+      const os = hitOffSeg(ploc.x, ploc.y);
+      if (os != null) {
+        if (e.shiftKey) setSelOff(selOff.includes(os) ? selOff.filter((x) => x !== os) : [...selOff, os]);
+        else if (!selOff.includes(os)) setSelOff([os]);
+        const seed = offSegs.find((o) => o.id === os);
+        drag.current = seed ? { mode: "eoff", id: os, last: raw, seed, sx: e.clientX, sy: e.clientY, moved: false } : null;
+        return;
+      }
+      const bl = hitBufLine(ploc.x, ploc.y);
+      if (bl != null) {
         let ids: number[];
-        if (e.shiftKey) ids = selL.includes(ld.id) ? selL.filter((x) => x !== ld.id) : [...selL, ld.id];
-        else ids = selL.includes(ld.id) ? selL : [ld.id];
+        if (e.shiftKey) ids = selL.includes(bl) ? selL.filter((x) => x !== bl) : [...selL, bl];
+        else ids = selL.includes(bl) ? selL : [bl];
         setSelL(ids);
         setSelV([]);
         const vset = new Set<number>();
@@ -1347,22 +1309,7 @@ export default function ProfileEditor({
         drag.current = { mode: "eline", ids, start: raw, base, sx: e.clientX, sy: e.clientY, moved: false };
         return;
       }
-      const od = hitOffSegD(ploc.x, ploc.y);
-      if (od) {
-        if (e.shiftKey) setSelOff(selOff.includes(od.id) ? selOff.filter((x) => x !== od.id) : [...selOff, od.id]);
-        else if (!selOff.includes(od.id)) setSelOff([od.id]);
-        const os2 = offSegs.find((o) => o.id === od.id);
-        if (os2) {
-          const base: { ka: SPoint; kb: SPoint; c1?: SPoint; c2?: SPoint; via?: SPoint } = { ka: { ...os2.seg.a }, kb: { ...os2.seg.b } };
-          if (os2.seg.c1) base.c1 = { ...os2.seg.c1 };
-          if (os2.seg.c2) base.c2 = { ...os2.seg.c2 };
-          if (os2.seg.via) base.via = { ...os2.seg.via };
-          drag.current = { mode: "eoff", id: od.id, start: raw, base, sx: e.clientX, sy: e.clientY, moved: false };
-        }
-        return;
-      }
     }
-
     const s = hitSeg(raw);
     if (s) {
       /* المانِ متصل (از یک یا هر دو سر به المان خارج از گروه) قفل است و درگ نمی‌شود */
@@ -1394,20 +1341,15 @@ export default function ProfileEditor({
         /* اگر نشانگر روی خودِ نقطه باشد، المان زیرین hover نشود تا فقط نقطه سفید شود */
         const onHandle = hitHandle(raw) != null;
         let hb: number | null = null;
-        let hv: number | null = null;
         if (editOpen && !onHandle) {
           const ploc = toLocal(e.clientX, e.clientY);
-          const vd2 = hitBufVxD(ploc.x, ploc.y);
-          const ld2 = hitBufLineD(ploc.x, ploc.y);
-          if (vd2 && (!ld2 || vd2.d <= Math.min(ld2.d + 1.5, 6))) hv = vd2.vid;
-          else if (ld2) hb = ld2.id;
+          hb = hitOffSeg(ploc.x, ploc.y) == null ? hitBufLine(ploc.x, ploc.y) : null;
         }
-        if (editOpen) {
-          setHoverVx(hv);
+        if (editOpen && hb != null) {
           setHoverBuf(hb);
-        }
-        if (editOpen && (hb != null || hv != null)) setHoverId(null);
-        else {
+          setHoverId(null);
+        } else {
+          if (editOpen) setHoverBuf(null);
           const s = onHandle ? null : hitSeg(raw);
           setHoverId(s ? s.id : null);
         }
@@ -1442,6 +1384,8 @@ export default function ProfileEditor({
 
     if (d.mode === "eline") {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 3) d.moved = true;
+      /* رأس‌های مشترک = یک‌جا جابه‌جا می‌شوند → همسایه‌ها بی‌درز دنباله می‌آیند؛
+         جابه‌جایی از مبنایِ لحظهٔ کلیک و با گامِ شبکه (فقط «میزان» حرکت) */
       const { z: qz, r: qr } = quantStep(raw, d.start);
       const nv = verts.map((v) => {
         const b0 = d.base.get(v.id);
@@ -1459,29 +1403,25 @@ export default function ProfileEditor({
     }
     if (d.mode === "eoff") {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 3) d.moved = true;
-      const { z: qz, r: qr } = quantStep(raw, d.start);
-      const os2 = offSegs.find((o) => o.id === d.id);
-      if (!os2) return;
-      const nvx = { ...(edit!.offV ?? {}) };
-      nvx[os2.ka] = { z: d.base.ka.z + qz, r: d.base.ka.r + qr };
-      nvx[os2.kb] = { z: d.base.kb.z + qz, r: d.base.kb.r + qr };
+      const dz = raw.z - d.last.z;
+      const dr = raw.r - d.last.r;
+      const base = edit?.off[d.id] ?? {};
+      const seed: SketchSeg = d.seed;
+      const cur = { ...seed, ...base } as SketchSeg;
+      const sh = (q?: SPoint): SPoint | undefined => (q ? { z: q.z + dz, r: q.r + dr } : q);
       const patch: OffPatch = {};
-      if (d.base.c1) patch.c1 = { z: d.base.c1.z + qz, r: d.base.c1.r + qr };
-      if (d.base.c2) patch.c2 = { z: d.base.c2.z + qz, r: d.base.c2.r + qr };
-      if (d.base.via) patch.via = { z: d.base.via.z + qz, r: d.base.via.r + qr };
-      onEditBuf({ ...edit!, offV: nvx, off: { ...edit!.off, [d.id]: { ...edit!.off[d.id], ...patch } } }, false);
-      return;
-    }
-    if (d.mode === "eoffv") {
-      if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 3) d.moved = true;
-      const { z: qz, r: qr } = quantStep(raw, d.start);
-      setOffV(d.key, { z: d.base.z + qz, r: d.base.r + qr }, false);
+      patch.a = sh(cur.a);
+      patch.b = sh(cur.b);
+      if (cur.c1) patch.c1 = sh(cur.c1);
+      if (cur.c2) patch.c2 = sh(cur.c2);
+      if (cur.via) patch.via = sh(cur.via);
+      patchOff(d.id, patch, false);
+      d.last = raw;
       return;
     }
     if (d.mode === "eoffh") {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 3) d.moved = true;
-      const { z: qz, r: qr } = quantStep(raw, d.start);
-      patchOff(d.id, { [d.part]: { z: d.base.z + qz, r: d.base.r + qr } } as OffPatch, false);
+      patchOff(d.id, { [d.part]: { z: raw.z, r: raw.r } } as OffPatch, false);
       return;
     }
     if (d.mode === "marquee") {
@@ -1629,7 +1569,12 @@ export default function ProfileEditor({
       if (edit && d.moved) setBufGeom(edit.verts, edit.lines, true);
       return;
     }
-    if (d?.mode === "eoff" || d?.mode === "eoffv" || d?.mode === "eoffh") {
+    if (d?.mode === "eoff") {
+      if (edit && d.moved) onEditBuf({ ...edit }, true);
+      else if (!e.shiftKey) setSelOff([d.id]);
+      return;
+    }
+    if (d?.mode === "eoffh") {
       if (edit && d.moved) onEditBuf({ ...edit }, true);
       return;
     }
@@ -2139,8 +2084,8 @@ export default function ProfileEditor({
 
         {/* ---------- حالت ادیت جی‌کد — کل مسیر، یک زنجیرۀ پیوسته؛ رنگ هر عملیات مثل قبل ---------- */}
         {editOpen && (
-          <g data-edit-layer="1">
-                        {bufRuns.map((run, i) => {
+          <g>
+            {bufRuns.map((run, i) => {
               const isRapid = run.kind === "rapid";
               const matchIso = iso && run.opId === isolatedOpId;
               const dim = iso && !matchIso;
@@ -2161,25 +2106,31 @@ export default function ProfileEditor({
               );
             })}
             {/* منحنی‌های افست — ۱:۱ با پروفایل، مستقل‌قابل‌ویرایش */}
-            {offSegs.map(({ id, seg: o }) => {
-              const sel = selOff.includes(id);
+            {offSegs.map((o) => {
+              const sel = selOff.includes(o.id);
+              return (
+                <path
+                  key={`of${o.id}`}
+                  d={segPath(o, cam)}
+                  fill="none"
+                  stroke={sel ? "#ffe9b0" : "#d9b36a"}
+                  strokeOpacity={sel ? 1 : 0.72}
+                  strokeWidth={sel ? 2.6 : 1.5}
+                  strokeDasharray="6 3"
+                  strokeLinecap="round"
+                  filter={sel ? "url(#curveGlow)" : undefined}
+                />
+              );
+            })}
+            {offSegs.map((o) => {
+              const sel = selOff.includes(o.id);
               const [ax, ay] = P(o.a.z, o.a.r);
               const [bx, by] = P(o.b.z, o.b.r);
               const c1 = o.c1 ? P(o.c1.z, o.c1.r) : null;
               const c2 = o.c2 ? P(o.c2.z, o.c2.r) : null;
               const via = o.via ? P(o.via.z, o.via.r) : null;
               return (
-                <g key={`of${id}`}>
-                  <path
-                    d={segPath(o, cam)}
-                    fill="none"
-                    stroke={sel ? "#ffe9b0" : "#d9b36a"}
-                    strokeOpacity={sel ? 1 : 0.72}
-                    strokeWidth={sel ? 2.6 : 1.5}
-                    strokeDasharray="6 3"
-                    strokeLinecap="round"
-                    filter={sel ? "url(#curveGlow)" : undefined}
-                  />
+                <g key={`oh${o.id}`}>
                   {sel && c1 && (
                     <>
                       <line x1={ax} y1={ay} x2={c1[0]} y2={c1[1]} stroke="#6ab0d8" strokeWidth={1} strokeDasharray="3 3" />
@@ -2193,30 +2144,22 @@ export default function ProfileEditor({
                     </>
                   )}
                   {sel && via && <circle cx={via[0]} cy={via[1]} r={5} fill="#2b1f33" stroke="#b48ee0" strokeWidth={2} />}
+                  <circle cx={ax} cy={ay} r={sel ? 5.2 : 3.6} fill={sel ? "#0f2a22" : "#241c12"} stroke={sel ? "#ffe9b0" : "#d9b36a"} strokeWidth={2} />
+                  <circle cx={bx} cy={by} r={sel ? 5.2 : 3.6} fill={sel ? "#0f2a22" : "#241c12"} stroke={sel ? "#ffe9b0" : "#d9b36a"} strokeWidth={2} />
                 </g>
               );
             })}
-            {/* رأس‌های مشترکِ افست — هر مفصل یک نقطه؛ کشیدنش هر دو خطِ به‌هم‌چسبیده را با هم می‌برد */}
-            {[...offVerts.entries()].map(([key, q]) => {
-              const [x, y] = P(q.z, q.r);
-              return <circle data-off-vx="1" key={`ov${key}`} cx={x} cy={y} r={3.6} fill="#241c12" stroke="#d9b36a" strokeWidth={1.8} className="pt-hover" />;
-            })}
             {hoverBuf != null && lineById.get(hoverBuf) && (
-              <path data-hov-line="1" d={lineD(lineById.get(hoverBuf)!)} fill="none" stroke="#fff3dc" strokeOpacity={0.9} strokeWidth={2.4} strokeLinecap="round" pointerEvents="none" />
+              <path d={lineD(lineById.get(hoverBuf)!)} fill="none" stroke="#fff3dc" strokeOpacity={0.9} strokeWidth={2.4} strokeLinecap="round" pointerEvents="none" />
             )}
             {bufMarq?.ids.map((id) => {
               const l = lineById.get(id);
-              return l ? <path data-marq-line="1" key={`bm${id}`} d={lineD(l)} fill="none" stroke="#ffffff" strokeOpacity={0.8} strokeWidth={2.2} strokeLinecap="round" /> : null;
+              return l ? <path key={`bm${id}`} d={lineD(l)} fill="none" stroke="#ffffff" strokeOpacity={0.8} strokeWidth={2.2} strokeLinecap="round" /> : null;
             })}
             {lines.filter((l) => selL.includes(l.id)).map((l) => (
-              <path data-sel-line="1" key={`bs${l.id}`} d={lineD(l)} fill="none" stroke="#45b394" strokeWidth={3} strokeLinecap="round" filter="url(#curveGlow)" />
+              <path key={`bs${l.id}`} d={lineD(l)} fill="none" stroke="#45b394" strokeWidth={3} strokeLinecap="round" filter="url(#curveGlow)" />
             ))}
             {/* رأس‌های خطوط انتخابی — هر رأس یک نقطه (اشتراک‌ها هم‌مکان‌اند، دو‌تایی نمی‌شود) */}
-            {hoverVx != null && !selVids.has(hoverVx) && (() => {
-              const v = vz(hoverVx);
-              const [x, y] = P(v.z, v.x / 2);
-              return <circle data-hov-vx="1" cx={x} cy={y} r={5.5} fill="#120e09" stroke="#fff3dc" strokeWidth={2.2} filter="url(#curveGlow)" pointerEvents="none" />;
-            })()}
             {[...selVids].map((vid) => {
               const v = vz(vid);
               const [x, y] = P(v.z, v.x / 2);
@@ -2224,7 +2167,7 @@ export default function ProfileEditor({
               const shared = linesAtVx(vid).length > 1;
               return (
                 <g key={`bv${vid}`} filter="url(#curveGlow)">
-                  <circle data-vx="1" data-vx-on={on ? "1" : "0"} className="pt-hover" cx={x} cy={y} r={5.5} fill={on ? "#ffd27a" : shared ? "#0f2a22" : "#120e09"} stroke={on ? "#120e09" : "#45b394"} strokeWidth={2.4} />
+                  <circle className="pt-hover" cx={x} cy={y} r={5.5} fill={on ? "#ffd27a" : shared ? "#0f2a22" : "#120e09"} stroke={on ? "#120e09" : "#45b394"} strokeWidth={2.4} />
                 </g>
               );
             })}

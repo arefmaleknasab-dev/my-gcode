@@ -8,7 +8,7 @@ import SimulationView from "./components/SimulationView";
 import { IconCheck, IconCode, IconDownload, IconLayers, IconPen, IconRedo, IconSim, IconSpindle, IconUndo, IconWarn } from "./components/icons";
 import { buildDxf } from "./lib/dxf";
 import { PRESETS, STRATEGIES, applyGcodeOvr, deriveGcodeOvr, expandLines, generate, makeOps, normalizeParams, presetPoints, seedGcodeEdit } from "./lib/lathe";
-import type { EditBuf, GcodeOvrMap, OffPatch, Params, PPoint, Preset } from "./lib/lathe";
+import type { EditBuf, GcodeOvrMap, Params, PPoint, Preset } from "./lib/lathe";
 import type { SketchSeg } from "./lib/sketch";
 import { autoSplitPoint, branchPoints, chainPolyline, flattenSketch, normalizeSketch, orderChain, sketchFromPoints, sketchFromWall, splitChainAt } from "./lib/sketch";
 import { cn } from "./utils/cn";
@@ -23,11 +23,10 @@ interface Saved {
   layout?: LayoutState;
   activePreset?: string | null;
   gcodeOvr?: Record<string, { s?: { z: number; x: number }; e?: { z: number; x: number }; del?: boolean }>;
-  offsetEdits?: { patches?: Record<string, { c1?: { z: number; r: number }; c2?: { z: number; r: number }; via?: { z: number; r: number }; del?: boolean }>; vx?: Record<string, { z: number; r: number }> };
   version?: number;
 }
 
-const SAVE_VERSION = 7;
+const SAVE_VERSION = 6;
 
 let SAVED: Saved | null = null;
 try {
@@ -45,37 +44,6 @@ interface HistEntry {
   sketch: SketchSeg[];
   gcodeOvr: GcodeOvrMap;
   editBuf: EditBuf | null;
-}
-
-/* ویرایش‌های لایهٔ افست — ماندگار بینِ جلساتِ حالت ادیت (روی فایل اثر ندارند) */
-interface OffsetEdits {
-  patches: Record<number, OffPatch>;
-  vx: Record<string, { z: number; r: number }>;
-}
-
-function normOffsetEdits(raw: Saved["offsetEdits"]): OffsetEdits {
-  const out: OffsetEdits = { patches: {}, vx: {} };
-  if (!raw || typeof raw !== "object") return out;
-  const okPt = (q: unknown): q is { z: number; r: number } =>
-    !!q && typeof q === "object" && typeof (q as { z: unknown }).z === "number" && typeof (q as { x?: unknown; r?: unknown }).r === "number" && isFinite((q as { z: number }).z) && isFinite((q as { r: number }).r);
-  if (raw.patches && typeof raw.patches === "object") {
-    for (const [k, v] of Object.entries(raw.patches)) {
-      const id = Number(k);
-      if (!Number.isInteger(id) || !v || typeof v !== "object") continue;
-      const o: OffPatch = {};
-      if (okPt(v.c1)) o.c1 = { z: v.c1!.z, r: v.c1!.r };
-      if (okPt(v.c2)) o.c2 = { z: v.c2!.z, r: v.c2!.r };
-      if (okPt(v.via)) o.via = { z: v.via!.z, r: v.via!.r };
-      if (v.del === true) o.del = true;
-      if (o.c1 || o.c2 || o.via || o.del) out.patches[id] = o;
-    }
-  }
-  if (raw.vx && typeof raw.vx === "object") {
-    for (const [k, v] of Object.entries(raw.vx)) {
-      if (okPt(v)) out.vx[k] = { z: v.z, r: v.r };
-    }
-  }
-  return out;
 }
 
 /* بازخوانی ایمنِ اوررایدها از حافظهٔ محلی (سنجش نوع پس از پارس) */
@@ -136,7 +104,6 @@ export default function App() {
   /* حالت ادیت جی‌کد: فایل = برنامهٔ پایه + اوررایدِ تأییدشده (پیش از «تأیید» فایل دست‌نخورده است) */
   const [gcodeOvr, setGcodeOvr] = useState<GcodeOvrMap>(() => normGcodeOvr(SAVED?.gcodeOvr));
   const [editBuf, setEditBuf] = useState<EditBuf | null>(null);
-  const [offsetEdits, setOffsetEdits] = useState<OffsetEdits>(() => normOffsetEdits(SAVED?.offsetEdits));
   const editBufRef = useRef<EditBuf | null>(editBuf);
   editBufRef.current = editBuf;
 
@@ -180,11 +147,11 @@ export default function App() {
   /* ذخیره محلی */
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, layout, gcodeOvr, offsetEdits, version: SAVE_VERSION }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ sketch, params, settings, activePreset, layout, gcodeOvr, version: SAVE_VERSION }));
     } catch {
       /* ignore */
     }
-  }, [sketch, params, settings, activePreset, layout, gcodeOvr, offsetEdits]);
+  }, [sketch, params, settings, activePreset, layout, gcodeOvr]);
 
   /* هنگام تغییر برنامه، هایلایت جی‌کد پاک شود */
   useEffect(() => {
@@ -222,7 +189,7 @@ export default function App() {
     if (editBufRef.current) return;
     pushPast(snap());
     const seed = seedGcodeEdit(gen.segs);
-    setEditBuf({ verts: seed.verts, lines: seed.lines, sketch, off: { ...offsetEdits.patches }, offV: { ...offsetEdits.vx } });
+    setEditBuf({ verts: seed.verts, lines: seed.lines, sketch, off: {} });
     setHistVer((v) => v + 1);
   };
   const closeEdit = () => {
@@ -237,23 +204,18 @@ export default function App() {
     if (!eb) return;
     const next = deriveGcodeOvr(eb.verts, eb.lines, gen.segs, gcodeOvr);
     const sketchChanged = eb.sketch !== sketch;
-    const ovrChanged = JSON.stringify(next) !== JSON.stringify(gcodeOvr);
-    const offNext = { patches: eb.off ?? {}, vx: eb.offV ?? {} };
-    const offChanged = JSON.stringify(offNext) !== JSON.stringify(offsetEdits);
-    if (!sketchChanged && !ovrChanged && !offChanged) {
+    if (!sketchChanged && JSON.stringify(next) === JSON.stringify(gcodeOvr)) {
       showToast("تغییری برای ثبت نیست", "warn");
       return;
     }
     pushPast(snap());
-    if (ovrChanged) setGcodeOvr(next);
+    setGcodeOvr(next);
     if (sketchChanged) {
       setActivePreset(null);
       setSketch(eb.sketch);
     }
-    if (offChanged) setOffsetEdits(offNext);
     setHistVer((v) => v + 1);
-    if (sketchChanged || ovrChanged) showToast("جی‌کد به‌روز شد ✓ (حالت ادیت باز ماند)");
-    else showToast("لایهٔ افست ثبت شد ✓ (روی فایل جی‌کد اثر ندارد — مرجعِ نمایشی است)");
+    showToast("جی‌کد به‌روز شد ✓ (حالت ادیت باز ماند)");
   };
   /* تغییرات بافر (خطوط/پروفایل/افست) — یک‌گام تاریخچه برای هر ژست */
   const onEditBuf = (next: EditBuf | null, commit: boolean) => {
@@ -546,7 +508,7 @@ export default function App() {
                 }
                 for (const sg of gen.segs) if (sg.ovrKey && !live.has(sg.ovrKey)) n++;
                 if (editBuf.sketch !== sketch) n++;
-                if (JSON.stringify({ p: editBuf.off ?? {}, v: editBuf.offV ?? {} }) !== JSON.stringify(offsetEdits)) n++;
+                n += Object.keys(editBuf.off).length;
                 return n;
               })()}
               onEditToggle={(open) => (open ? openEdit() : closeEdit())}
