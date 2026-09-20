@@ -1,14 +1,11 @@
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import type { GenResult } from "../lib/lathe";
 import { fmtTime } from "../lib/lathe";
 import { cn } from "../utils/cn";
-import { IconCode, IconCopy, IconDownload } from "./icons";
 
 interface Props {
   gen: GenResult;
   activeLine: number;
-  onCopy: () => void;
-  onDownload: () => void;
 }
 
 const TOKEN_RE = /(%|\(.*?\)|[NO]\d+|G\d+(?:\.\d+)?|M\d+|[XYZ]-?\d+(?:\.\d+)?|[FSP]\d+(?:\.\d+)?)/g;
@@ -35,40 +32,85 @@ function tokenize(line: string) {
   return parts;
 }
 
-export default function GCodePanel({ gen, activeLine, onCopy, onDownload }: Props) {
+
+const ROW_H = 20; // ارتفاع ثابت هر سطر (px) — سطرها تک‌خط و یکدست‌اند
+const OVERSCAN = 8; // سطرهای اضافی بالا/پایین دید برای اسکرول نرم
+
+interface RowProps { ln: number; parts: { text: string; cls: string }[]; active: boolean; top: number }
+/* سطر memo: هنگام پخش شبیه‌سازی فقط ۲ سطر (قبلی/فعلی) بازرندر می‌شوند نه ~۱۶۰۰ سطر */
+const GCodeLine = memo(function GCodeLine({ ln, parts, active, top }: RowProps) {
+  return (
+    <div data-ln={ln} className={cn("gc-line", active && "border-brass bg-brass/10")} style={{ textAlign: "left", position: "absolute", top, left: 0, right: 0, height: ROW_H, overflow: "hidden" }}>
+      <span className="mr-2 inline-block w-7 select-none text-right text-[10px] text-dim">{ln + 1}</span>
+      {parts.map((t, j) => (
+        <span key={j} className={t.cls}>
+          {t.text}
+        </span>
+      ))}
+    </div>
+  );
+});
+
+export default function GCodePanel({ gen, activeLine }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const highlighted = useMemo(() => gen.lines.map((l) => tokenize(l)), [gen.lines]);
 
+  /* مجازی‌سازی: فقط سطرهای داخل دید (+حاشیه) رندر می‌شوند تا تایپ/اسکرول گیر نکند */
+  const [view, setView] = useState({ top: 0, height: 600 });
   useEffect(() => {
-    if (activeLine < 0 || !bodyRef.current) return;
-    const el = bodyRef.current.querySelector(`[data-ln="${activeLine}"]`);
-    el?.scrollIntoView({ block: "nearest" });
+    const el = bodyRef.current;
+    if (!el) return;
+    setView({ top: el.scrollTop, height: el.clientHeight });
+    const ro = new ResizeObserver(() => {
+      const n = { top: el.scrollTop, height: el.clientHeight };
+      setView((v) => (v.top === n.top && v.height === n.height ? v : n));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /* دنبال‌کردن خط فعال شبیه‌سازی (معادل block:nearest) */
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || activeLine < 0) return;
+    const y = activeLine * ROW_H;
+    if (y < el.scrollTop + OVERSCAN * ROW_H) el.scrollTop = Math.max(0, y - OVERSCAN * ROW_H);
+    else if (y + ROW_H > el.scrollTop + el.clientHeight - OVERSCAN * ROW_H)
+      el.scrollTop = y + ROW_H - el.clientHeight + OVERSCAN * ROW_H;
   }, [activeLine]);
+
+  const onScroll = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const n = { top: el.scrollTop, height: el.clientHeight };
+    setView((v) => (v.top === n.top && v.height === n.height ? v : n));
+  };
+  const start = Math.max(0, Math.floor(view.top / ROW_H) - OVERSCAN);
+  const end = Math.min(highlighted.length, Math.ceil((view.top + view.height) / ROW_H) + OVERSCAN);
+
+  /* کپی دستی: چون لیست مجازی است (فقط سطرهای داخل دید رندر می‌شوند)، اگر
+     انتخاب کاربر از اول تا آخر سطرهای نمایشی بود (مثل Ctrl+A)، کل برنامه —
+     نه فقط همان چند سطر — با پایان‌خط CRLF در کلیپ‌بورد گذاشته می‌شود.
+     انتخاب چند خط محدود، دست‌نخورده کپی می‌شود. */
+  const onCopyFull = (e: ClipboardEvent<HTMLDivElement>) => {
+    try {
+      const sel = window.getSelection();
+      const el = bodyRef.current;
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !el) return;
+      const first = el.querySelector(`[data-ln="${start}"]`);
+      const last = el.querySelector(`[data-ln="${end - 1}"]`);
+      if (first && last && sel.containsNode(first, true) && sel.containsNode(last, true)) {
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", gen.lines.join("\r\n"));
+      }
+    } catch {
+      /* ignore — کپی عادی انجام می‌شود */
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-lg border border-edge bg-panel">
-      <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
-        <div className="flex items-center gap-2">
-          <IconCode className="h-4 w-4 text-brass" />
-          <h2 className="font-display text-[15px] leading-none text-ink">جی‌کد خروجی</h2>
-          <span className="flex items-center gap-1 rounded-full border border-edge bg-panel2 px-2 py-0.5 text-[10px] font-semibold text-mute">
-            <span className={cn("h-1.5 w-1.5 rounded-full", activeLine >= 0 ? "dot-live bg-ok" : "bg-brass")} />
-            {activeLine >= 0 ? "همگام با شبیه‌سازی" : "همگام با طرح"}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button className="btn !px-2 !py-1.5 text-[11.5px]" onClick={onCopy} title="کپی جی‌کد">
-            <IconCopy className="h-3.5 w-3.5" />
-            کپی
-          </button>
-          <button className="btn btn-brass !px-2 !py-1.5 text-[11.5px]" onClick={onDownload} title="دانلود فایل NC">
-            <IconDownload className="h-3.5 w-3.5" />
-            دانلود NC.
-          </button>
-        </div>
-      </div>
-
       {/* آمار */}
       <div className="grid grid-cols-4 gap-px border-b border-edge bg-edge">
         <Stat label="زمان تخمینی" value={fmtTime(gen.timeSec)} accent />
@@ -77,30 +119,14 @@ export default function GCodePanel({ gen, activeLine, onCopy, onDownload }: Prop
         <Stat label="عملیات خشن" value={String(gen.roughLayers)} />
       </div>
 
-      <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto py-1.5" dir="ltr">
-        {highlighted.map((parts, i) => (
-          <div
-            key={i}
-            data-ln={i}
-            className={cn("gc-line", i === activeLine && "border-brass bg-brass/10")}
-            style={{ textAlign: "left" }}
-          >
-            <span className="mr-2 inline-block w-7 select-none text-right text-[10px] text-dim">{i + 1}</span>
-            {parts.map((p, j) => (
-              <span key={j} className={p.cls}>
-                {p.text}
-              </span>
-            ))}
-          </div>
-        ))}
+      <div ref={bodyRef} onScroll={onScroll} onCopy={onCopyFull} className="min-h-0 flex-1 overflow-auto" dir="ltr">
+        <div style={{ height: highlighted.length * ROW_H, position: "relative" }}>
+          {highlighted.slice(start, end).map((parts, k) => (
+            <GCodeLine key={start + k} ln={start + k} parts={parts} active={start + k === activeLine} top={(start + k) * ROW_H} />
+          ))}
+        </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-edge px-3 py-1.5 text-[10.5px] text-dim">
-        <span>{gen.lines.length} خط • {gen.segs.length} حرکت</span>
-        <span dir="ltr" className="font-mono">
-          {gen.format === "modal" ? "G90 • G49 • XY • X=L • Y=⌀ • M02" : "G21 • G18 • X/Z • X=⌀"}
-        </span>
-      </div>
     </div>
   );
 }

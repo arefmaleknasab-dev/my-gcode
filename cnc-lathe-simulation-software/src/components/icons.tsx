@@ -65,6 +65,8 @@ export const IconEye = (p: P) =>
 export const IconEyeOff = (p: P) =>
   base(p, <><path d="M3 3l18 18" /><path d="M10.6 5.2A11 11 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.1 4M6.6 6.6A16.9 16.9 0 0 0 2 12s3.5 7 10 7c1.4 0 2.7-.3 3.9-.8" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></>);
 export const IconX = (p: P) => base(p, <path d="M18 6 6 18M6 6l12 12" />);
+export const IconWindow = (p: P) =>
+  base(p, <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9.5 4v16" /><path d="M3 9.5h6.5" /></>);
 export const IconTool = (p: P) =>
   base(p, <><path d="M12 2.5 20.5 11 12 19.5 3.5 11z" /><circle cx="12" cy="11" r="2.6" /><path d="M12 19.5V23" /></>);
 export const IconCursor = (p: P) =>
@@ -79,5 +81,9 @@ export const IconArc3 = (p: P) =>
   base(p, <><path d="M4 18a9 9 0 0 1 16 0" /><circle cx="4" cy="18" r="2.1" /><circle cx="20" cy="18" r="2.1" /><circle cx="12" cy="9" r="1.8" /></>);
 export const IconMagnetSm = (p: P) =>
   base(p, <><path d="M6 4v7a6 6 0 0 0 12 0V4h-4v7a2 2 0 0 1-4 0V4z" /></>);
+export const IconSplit = (p: P) =>
+  base(p, <><circle cx="6" cy="6" r="2.6" /><circle cx="6" cy="18" r="2.6" /><path d="M8.2 7.8 20 19M8.2 16.2 20 5" /><path d="M14 3.5v17" strokeDasharray="2.5 2.5" /></>);
+export const IconBowl = (p: P) =>
+  base(p, <><path d="M3 12h18" /><path d="M4 12a8 8 0 0 0 16 0" /><path d="M9 20h6" /></>);
 export const IconHand = (p: P) =>
   base(p, <><path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-5.5v-1a1.5 1.5 0 0 1 3 0V11m0-4.5a1.5 1.5 0 0 1 3 0V12m0-2.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1.8a6 6 0 0 1-4.7-2.3L4 14.6a1.6 1.6 0 0 1 2.4-2.1L8 14" /></>);
